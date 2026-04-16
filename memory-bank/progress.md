@@ -1,0 +1,54 @@
+# Progress
+
+## Completed
+
+### Фаза 1: Фундамент и авторизация
+
+- [x] `package.json` — ES Modules, scripts, dependencies (telegraf, @supabase/supabase-js, @google/genai, express, pdf-parse, mammoth, file-type), node >= 20.
+- [x] `.env.example` — шаблон 11 переменных без значений.
+- [x] `src/db/supabase.js` — клиент Supabase на service_role_key + проверка env.
+- [x] SQL в Supabase: таблицы `access_list`, `sessions`, `rate_limits`, `global_api_counter`, `documents`; индексы; RLS (service_role only); функция `match_documents`; начальные данные (owner + counter row).
+- [x] `src/db/queries.js` — полный слой запросов: access, sessions, rate limits, global counter, stats.
+- [x] `src/bot/middleware/auth.js` — проверка доступа с кэшем 5 мин + `invalidateCache()`; сообщение отказа с `user_id`.
+- [x] `src/bot/middleware/session.js` — загрузка/автосохранение сессии в `ctx.session`.
+- [x] `src/bot/handlers/start.js` — `/start` (меню агентов для авторизованных), `/help`.
+- [x] `src/bot/handlers/admin.js` — `/grant`, `/revoke`, `/users`, `/status`, `/upload`, `/delete_doc`, `/list_docs` (только OWNER); re-upload через tmp-имя с rollback.
+- [x] `index.js` — Express + Telegraf, health check, webhook с `secret_token`, middleware chain (private-фильтр → auth → session), регистрация всех handlers.
+
+### Фаза 2: RAG Pipeline
+
+- [x] `src/gemini/client.js` — @google/genai SDK, `generateResponse()` (systemInstruction отделён от contents, safety settings BLOCK_MEDIUM_AND_ABOVE, timeout 30с через AbortController), `embedText()`, проверка `checkGlobalCounter` перед вызовом + `incrementGlobalCounter` после.
+- [x] `src/rag/ingest.js` — парсинг PDF/DOCX/TXT, chunking 500 токенов / overlap 50, валидация MIME по magic bytes + NUL-байт защита для TXT, лимит 10MB, `sanitizeFilename()`.
+- [x] `src/rag/embed.js` — batch-embedding по 10 чанков через gemini-embedding-001, инкремент `global_api_counter`, timeout 30с.
+- [x] `src/rag/retrieve.js` — vector search через `match_documents` RPC, top-3, min score 0.7, фильтр по `agent_type`.
+- [x] `src/db/queries.js` дополнен: `deleteDocumentsByFilename`, `insertDocumentChunks`, `renameDocuments`, `matchDocuments`, `getDocumentStats`, `getSession`, `saveSession`, `clearSessionHistory`, `checkAndIncrementUserRateLimit`.
+- [x] SQL: `increment_api_counter()` — атомарная Postgres-функция (UPDATE ... RETURNING) для race-free инкремента счётчика. Файл: `sql/increment_api_counter.sql`.
+
+### Фаза 3: 4 Агента и Rate Limiting
+
+- [x] `src/agents/marketer.js` — маркетолог-стратег: стратегия, ЦА, воронки, unit-экономика. RAG фильтр `agent_type=marketer`.
+- [x] `src/agents/copywriter.js` — копирайтер: посты, рассылки, CTA, контент-план. RAG фильтр `agent_type=copywriter`.
+- [x] `src/agents/ads.js` — рекламщик РСЯ/Директ: объявления (35/81/300), таргетинг, ставки, ретаргетинг. RAG фильтр `agent_type=ads`.
+- [x] `src/agents/packager.js` — упаковщик ТГ-канала: bio (255), закреп, УТП, рубрики, монетизация. RAG фильтр `agent_type=packager`.
+- [x] `src/bot/handlers/agent.js` — callback `agent:{type}` с валидацией, `/switch`, сброс истории при смене.
+- [x] `src/bot/handlers/message.js` — роутинг текста → агент, `/reset`, `/new`, лимит 4000 символов, история 10 пар user/model, user rate limit (20/час), уведомление owner при 80% глобального лимита.
+- [x] Все промпты содержат anti-injection инструкцию + перенаправление вне своей зоны через /switch.
+- [x] Ошибки 429/500/503/timeout/global-limit → UX-сообщения пользователю, без stack trace.
+
+### Security Review (между Фазами 2 и 3)
+
+- [x] Аудит проведён. 0 критичных уязвимостей.
+- [x] Исправлено: MIME bypass для .txt (NUL-байты), race condition в counter (атомарный RPC), re-upload без rollback (tmp-имя), /delete_doc без sanitize.
+
+## In Progress
+
+Нет.
+
+## Pending
+
+- Фаза 4: деплой на Render, финальный security review, smoke tests.
+
+## Known Issues
+
+- `pdf-parse@1.1.1` устарел, потенциальный DoS при парсинге битых PDF — рекомендуется обновить или заменить до деплоя.
+- RLS в Supabase — подтвердить включён через Dashboard (service_role bypass'ит RLS, но anon доступ должен быть заблокирован).
