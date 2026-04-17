@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import { checkGlobalCounter, incrementGlobalCounter } from '../db/queries.js';
+import { reserveGlobalApiCall } from '../db/queries.js';
 
 const { GEMINI_API_KEY } = process.env;
 
@@ -7,8 +7,12 @@ if (!GEMINI_API_KEY) {
   throw new Error('Missing GEMINI_API_KEY in environment variables');
 }
 
-const MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
+const COMPLEX_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
+const SIMPLE_MODEL = 'gemini-2.5-flash-lite';
 const REQUEST_TIMEOUT = 30_000;
+const SIMPLE_MAX_OUTPUT_TOKENS = 700;
+const COMPLEX_MAX_OUTPUT_TOKENS = 1200;
+const DETAILED_MAX_OUTPUT_TOKENS = 1700;
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -25,7 +29,9 @@ const FORMATTING_INSTRUCTIONS = `
 - Не используй markdown-разметку: ни **жирного**, ни *курсива*, ни заголовков с #.
 - Используй обычный дефис "-" вместо длинного тире "—" или среднего "–".
 - Для списков используй дефис с пробелом: "- пункт".
-- Добавляй 1-2 подходящих эмодзи в начале смысловых блоков (вступление, список, итог), но не переусердствуй и не ставь эмодзи в каждую строку.`;
+- Добавляй 1-2 подходящих эмодзи в начале смысловых блоков, но не в каждую строку.
+- Тон дружелюбный, живой и человеческий: без канцелярита, без сухого делового стиля.
+- Не используй шаблонный заголовок "Коротко:". Просто сразу давай суть естественным языком.`;
 
 function formatForTelegram(text) {
   if (!text) return text;
@@ -38,12 +44,23 @@ function formatForTelegram(text) {
     .replace(/-{2,}/g, '-');
 }
 
-export async function generateResponse({ userMessage, systemPrompt, ragContext, messageHistory = [] }) {
-  const gate = await checkGlobalCounter();
+function wantsDetailedAnswer(userMessage = '') {
+  return /подроб|разверн|распиш|сделай план|по шагам|детально|с примерами/i.test(userMessage);
+}
+
+export async function generateResponse({ userMessage, systemPrompt, ragContext, messageHistory = [], complexity = 'complex', maxOutputTokens: maxOutputTokensOverride }) {
+  const gate = await reserveGlobalApiCall();
   if (!gate.allowed) {
     throw new Error('GEMINI_GLOBAL_LIMIT');
   }
 
+  const model = complexity === 'simple' ? SIMPLE_MODEL : COMPLEX_MODEL;
+  const defaultMaxOutputTokens = wantsDetailedAnswer(userMessage)
+    ? DETAILED_MAX_OUTPUT_TOKENS
+    : complexity === 'simple'
+      ? SIMPLE_MAX_OUTPUT_TOKENS
+      : COMPLEX_MAX_OUTPUT_TOKENS;
+  const maxOutputTokens = maxOutputTokensOverride ?? defaultMaxOutputTokens;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
@@ -62,12 +79,12 @@ export async function generateResponse({ userMessage, systemPrompt, ragContext, 
     fullSystemPrompt += FORMATTING_INSTRUCTIONS;
 
     const response = await ai.models.generateContent({
-      model: MODEL,
+      model,
       contents,
       config: {
         systemInstruction: fullSystemPrompt,
         temperature: 0.7,
-        maxOutputTokens: 2048,
+        maxOutputTokens,
         safetySettings: SAFETY_SETTINGS,
       },
     }, { signal: controller.signal });
@@ -76,12 +93,9 @@ export async function generateResponse({ userMessage, systemPrompt, ragContext, 
     if (!rawText) throw new Error('GEMINI_EMPTY_RESPONSE');
     const text = formatForTelegram(rawText);
 
-    const count = await incrementGlobalCounter().catch(() => null);
-    const limit = parseInt(process.env.DAILY_API_LIMIT, 10) || 250;
-    const warning = count !== null && count >= Math.floor(limit * 0.8);
-    return { text, count, warning };
+    return { text, count: gate.count, warning: gate.warning };
   } catch (error) {
-    console.error(`[GEMINI] model=${MODEL} status=${error.status} code=${error.code} name=${error.name} message=${error.message}`);
+    console.error(`[GEMINI] model=${model} status=${error.status} code=${error.code} name=${error.name} message=${error.message}`);
     if (error.name === 'AbortError') {
       throw new Error('GEMINI_TIMEOUT');
     }
@@ -98,6 +112,11 @@ export async function generateResponse({ userMessage, systemPrompt, ragContext, 
 }
 
 export async function embedText(text) {
+  const gate = await reserveGlobalApiCall();
+  if (!gate.allowed) {
+    throw new Error('GEMINI_GLOBAL_LIMIT');
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 

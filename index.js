@@ -56,6 +56,8 @@ const OWNER_ONLY_COMMANDS = [
   { command: 'users', description: 'Список партнёров' },
   { command: 'stats', description: 'Статистика использования' },
   { command: 'upload', description: 'Загрузить документ в базу знаний' },
+  { command: 'list_docs', description: 'Список документов в базе знаний' },
+  { command: 'delete_doc', description: 'Удалить документ из базы знаний' },
 ];
 
 const OWNER_COMMANDS = [...PUBLIC_COMMANDS, ...OWNER_ONLY_COMMANDS];
@@ -76,6 +78,12 @@ async function registerCommandScopes() {
 
 // Launch
 const server = app.listen(Number(PORT), async () => {
+  const adminIds = getAdminIds();
+  const owner = (process.env.OWNER_CHAT_ID || '').trim() || '(not set)';
+  const admins = adminIds.filter((id) => id !== owner);
+  console.log(`[BOOT] OWNER_CHAT_ID=${owner}`);
+  console.log(`[BOOT] ADMIN_IDS=${admins.length ? admins.join(',') : '(empty)'}`);
+
   try {
     await registerCommandScopes();
   } catch (e) {

@@ -1,5 +1,5 @@
 export function getAdminIds() {
-  const owner = process.env.OWNER_CHAT_ID;
+  const owner = (process.env.OWNER_CHAT_ID || '').trim();
   const admins = (process.env.ADMIN_IDS || '')
     .split(',')
     .map((s) => s.trim())
