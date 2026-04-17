@@ -7,6 +7,7 @@ if (!GEMINI_API_KEY) {
 }
 
 const EMBED_MODEL = 'gemini-embedding-001';
+const EMBED_DIM = 768;
 const BATCH_SIZE = 10;
 const REQUEST_TIMEOUT = 30_000;
 
@@ -20,6 +21,7 @@ async function embedBatch(texts) {
     const response = await ai.models.embedContent({
       model: EMBED_MODEL,
       contents: texts,
+      config: { outputDimensionality: EMBED_DIM },
     }, { signal: controller.signal });
 
     await incrementGlobalCounter();

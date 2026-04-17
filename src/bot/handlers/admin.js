@@ -14,11 +14,13 @@ import { ingestFile, sanitizeFilename } from '../../rag/ingest.js';
 import { embedChunks } from '../../rag/embed.js';
 
 const VALID_AGENTS = ['marketer', 'copywriter', 'ads', 'packager'];
+const UPLOAD_TARGETS = [...VALID_AGENTS, 'consultant'];
 const AGENT_NAMES = {
   marketer: 'Маркетолог',
   copywriter: 'Копирайтер',
-  ads: 'Рекламщик',
+  ads: 'Директолог (РСЯ)',
   packager: 'Упаковщик',
+  consultant: 'Консультант',
 };
 
 const pendingUploads = new Map();
@@ -33,21 +35,36 @@ function parseUserId(text) {
 }
 
 async function downloadFile(ctx, fileId) {
-  const link = await ctx.telegram.getFileLink(fileId);
-  const res = await fetch(link.href);
-  if (!res.ok) throw new Error('FILE_DOWNLOAD_FAILED');
-  return Buffer.from(await res.arrayBuffer());
+  const MAX_ATTEMPTS = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const link = await ctx.telegram.getFileLink(fileId);
+      const res = await fetch(link.href);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return Buffer.from(await res.arrayBuffer());
+    } catch (e) {
+      lastErr = e;
+      console.error(`[DOWNLOAD] attempt=${attempt}/${MAX_ATTEMPTS} error=${e.message}`);
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 1000 * attempt));
+      }
+    }
+  }
+  throw new Error('FILE_DOWNLOAD_FAILED');
 }
 
 const UPLOAD_AGENT_KEYBOARD = Markup.inlineKeyboard([
+  [Markup.button.callback('📚 Все агенты', 'upload_agent:all')],
   [
     Markup.button.callback('Маркетолог', 'upload_agent:marketer'),
     Markup.button.callback('Копирайтер', 'upload_agent:copywriter'),
   ],
   [
-    Markup.button.callback('Рекламщик', 'upload_agent:ads'),
+    Markup.button.callback('Директолог (РСЯ)', 'upload_agent:ads'),
     Markup.button.callback('Упаковщик', 'upload_agent:packager'),
   ],
+  [Markup.button.callback('💬 Консультант (о проекте)', 'upload_agent:consultant')],
   [Markup.button.callback('Отмена', 'upload_agent:cancel')],
 ]);
 
@@ -99,7 +116,7 @@ export function adminHandler(bot) {
         return ctx.reply('Активных пользователей нет');
       }
       const lines = users.map((u) => {
-        const date = u.granted_at ? new Date(u.granted_at).toISOString().split('T')[0] : '—';
+        const date = u.granted_at ? new Date(u.granted_at).toISOString().split('T')[0] : '-';
         return `• ${u.user_id} (выдан: ${date})`;
       });
       await ctx.reply(`Активные пользователи (${users.length}):\n\n${lines.join('\n')}`);
@@ -109,8 +126,8 @@ export function adminHandler(bot) {
     }
   });
 
-  // /status
-  bot.command('status', async (ctx) => {
+  // /stats (и alias /status)
+  const statsHandler = async (ctx) => {
     if (!isOwner(ctx)) return;
     try {
       const s = await getStats();
@@ -124,12 +141,14 @@ export function adminHandler(bot) {
           `API за сегодня: ${s.apiUsage.daily_count} (сброс: ${s.apiUsage.reset_date})`
       );
     } catch (e) {
-      console.error(`[STATUS] user_id=${ctx.from.id} error`);
+      console.error(`[STATS] user_id=${ctx.from.id} error`);
       await ctx.reply('Ошибка при получении статистики');
     }
-  });
+  };
+  bot.command('stats', statsHandler);
+  bot.command('status', statsHandler);
 
-  // /upload — подсказка; владелец отправляет файл документом
+  // /upload - подсказка; владелец отправляет файл документом
   bot.command('upload', async (ctx) => {
     if (!isOwner(ctx)) return;
     await ctx.reply('Отправьте файл (PDF, DOCX или TXT, до 10 МБ) как документ.');
@@ -170,15 +189,21 @@ export function adminHandler(bot) {
       return ctx.editMessageText('Загрузка отменена.');
     }
 
-    if (!VALID_AGENTS.includes(choice)) {
+    const isAll = choice === 'all';
+    if (!isAll && !UPLOAD_TARGETS.includes(choice)) {
       return ctx.answerCbQuery('Неверный агент');
     }
     if (!pending) {
       return ctx.answerCbQuery('Нет файла в ожидании');
     }
 
+    const targetAgents = isAll ? UPLOAD_TARGETS : [choice];
+    const targetLabel = isAll
+      ? `всех агентов (${UPLOAD_TARGETS.length})`
+      : `агента ${AGENT_NAMES[choice]}`;
+
     await ctx.answerCbQuery();
-    await ctx.editMessageText(`Обработка файла «${pending.filename}» для агента ${AGENT_NAMES[choice]}...`);
+    await ctx.editMessageText(`Обработка файла «${pending.filename}» для ${targetLabel}...`);
 
     try {
       const buffer = await downloadFile(ctx, pending.fileId);
@@ -186,15 +211,20 @@ export function adminHandler(bot) {
 
       // Re-upload safe flow: сначала embed+insert под временным именем,
       // потом DELETE старых чанков и RENAME tmp → финальное имя.
-      // Если embed/insert упадёт — старые данные нетронуты.
+      // Если embed/insert упадёт - старые данные нетронуты.
       const tmpName = `${safeName}__tmp_${Date.now()}`;
       const embeddings = await embedChunks(chunks);
-      const rows = chunks.map((content, i) => ({
-        content,
-        embedding: embeddings[i],
-        agent_type: choice,
-        filename: tmpName,
-      }));
+      const rows = [];
+      for (const agent of targetAgents) {
+        for (let i = 0; i < chunks.length; i++) {
+          rows.push({
+            content: chunks[i],
+            embedding: embeddings[i],
+            agent_type: agent,
+            filename: tmpName,
+          });
+        }
+      }
 
       try {
         await insertDocumentChunks(rows);
@@ -206,9 +236,10 @@ export function adminHandler(bot) {
       }
 
       pendingUploads.delete(ctx.from.id);
-      await ctx.reply(
-        `Документ «${safeName}» загружен: ${chunks.length} чанков для агента ${AGENT_NAMES[choice]}`
-      );
+      const countLabel = isAll
+        ? `${chunks.length} чанков × ${targetAgents.length} агентов`
+        : `${chunks.length} чанков для агента ${AGENT_NAMES[choice]}`;
+      await ctx.reply(`Документ «${safeName}» загружен: ${countLabel}`);
     } catch (e) {
       pendingUploads.delete(ctx.from.id);
       console.error(`[UPLOAD] user_id=${ctx.from.id} error=${e.message}`);
@@ -235,7 +266,7 @@ export function adminHandler(bot) {
         return ctx.reply('Документов нет');
       }
       const lines = docs.map(
-        (d) => `• ${d.filename} — ${AGENT_NAMES[d.agent_type] || d.agent_type} (${d.chunks} чанков)`
+        (d) => `• ${d.filename} - ${AGENT_NAMES[d.agent_type] || d.agent_type} (${d.chunks} чанков)`
       );
       await ctx.reply(`Документы (${docs.length}):\n\n${lines.join('\n')}`);
     } catch (e) {

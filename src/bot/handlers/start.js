@@ -1,48 +1,42 @@
-import { Markup } from 'telegraf';
-
-const AGENTS_KEYBOARD = Markup.inlineKeyboard([
-  [
-    Markup.button.callback('Маркетолог', 'agent:marketer'),
-    Markup.button.callback('Копирайтер', 'agent:copywriter'),
-  ],
-  [
-    Markup.button.callback('Рекламщик', 'agent:ads'),
-    Markup.button.callback('Упаковщик', 'agent:packager'),
-  ],
-]);
+import { AGENTS_KEYBOARD, HELP_TEXT, OWNER_USERNAME } from './agent.js';
 
 export function startHandler(bot) {
-  bot.start((ctx) => {
-    console.log(`[START] user_id=${ctx.from.id}`);
+  bot.start(async (ctx) => {
+    console.log(`[START] user_id=${ctx.from.id} guest=${Boolean(ctx.isGuest)}`);
 
-    ctx.reply(
-      'Добро пожаловать! Я — AI-ассистент с 4 специализированными агентами.\n\n' +
-      '**Маркетолог** — стратегия, анализ рынка, ЦА\n' +
-      '**Копирайтер** — тексты, посты, рассылки\n' +
-      '**Рекламщик** — объявления, таргетинг\n' +
-      '**Упаковщик** — офферы, УТП, продуктовые страницы\n\n' +
-      'Выберите агента:',
-      { parse_mode: 'Markdown', ...AGENTS_KEYBOARD }
+    if (ctx.isGuest) {
+      await ctx.reply(
+        '👋 Привет!\n\n' +
+        '🤖 Это приватный AI-ассистент для партнёров проекта.\n\n' +
+        '💡 Я могу рассказать о проекте и о том, что получают партнёры.\n' +
+        'Задайте вопрос обычным сообщением.\n\n' +
+        `🔑 Хотите получить доступ? Ваш ID: ${ctx.from.id}\n` +
+        `Отправьте его ${OWNER_USERNAME}`
+      );
+      return;
+    }
+
+    await ctx.reply(
+      '👋 Добро пожаловать!\n\n' +
+      '🤖 Я - AI-ассистент с 4 специализированными агентами:\n\n' +
+      '📊 Маркетолог - стратегия, ЦА, воронки\n' +
+      '✍️ Копирайтер - тексты, посты, рассылки\n' +
+      '📣 Директолог (РСЯ) - объявления, таргетинг в РСЯ/Яндекс.Директ\n' +
+      '📦 Упаковщик - офферы, УТП, Telegram-канал\n\n' +
+      '👇 Выберите агента:',
+      AGENTS_KEYBOARD
     );
   });
 
-  bot.help((ctx) => {
-    ctx.reply(
-      '**Команды:**\n\n' +
-      '/start — Главное меню\n' +
-      '/switch — Сменить агента\n' +
-      '/reset — Очистить историю диалога\n' +
-      '/new — Начать новый диалог\n' +
-      '/help — Эта справка\n\n' +
-      '**Для владельца:**\n' +
-      '/grant {user\\_id} — Выдать доступ\n' +
-      '/revoke {user\\_id} — Отозвать доступ\n' +
-      '/users — Список пользователей\n' +
-      '/status — Статистика\n' +
-      '/upload — Загрузить документ (отправить файл)',
-      { parse_mode: 'Markdown' }
-    );
+  bot.help(async (ctx) => {
+    if (ctx.isGuest) {
+      await ctx.reply(
+        '💡 Я могу рассказать о проекте. Задайте вопрос.\n\n' +
+        `🔑 Хотите получить доступ? Ваш ID: ${ctx.from.id}\n` +
+        `Отправьте его ${OWNER_USERNAME}`
+      );
+      return;
+    }
+    await ctx.reply(HELP_TEXT, AGENTS_KEYBOARD);
   });
 }
-
-export { AGENTS_KEYBOARD };

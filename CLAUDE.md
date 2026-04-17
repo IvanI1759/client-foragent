@@ -1,6 +1,6 @@
 c# Telegram AI-Assistant Bot
 
-Telegram-бот с 4 ИИ-агентами (Маркетолог, Копирайтер, Рекламщик, Упаковщик).
+Telegram-бот с 4 ИИ-агентами (Маркетолог, Копирайтер, Директолог (РСЯ), Упаковщик).
 Стек: Node.js 20, Telegraf 4.x, Google Gemini 3 Flash, Supabase + pgvector, Render.
 
 ## Commands

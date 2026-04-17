@@ -19,10 +19,8 @@ export default async function authMiddleware(ctx, next) {
 
   const cached = authCache.get(userId);
   if (cached && cached.expires > Date.now()) {
-    if (cached.allowed) return next();
-    return ctx.reply(
-      `Доступ запрещён.\n\nВаш ID: ${ctx.from.id}\nОтправьте его администратору для получения доступа.`
-    );
+    ctx.isGuest = !cached.allowed;
+    return next();
   }
 
   const { data } = await supabase
@@ -39,9 +37,6 @@ export default async function authMiddleware(ctx, next) {
     expires: Date.now() + CACHE_TTL,
   });
 
-  if (allowed) return next();
-
-  return ctx.reply(
-    `Доступ запрещён.\n\nВаш ID: ${ctx.from.id}\nОтправьте его администратору для получения доступа.`
-  );
+  ctx.isGuest = !allowed;
+  return next();
 }

@@ -58,14 +58,13 @@ ctx.reply(`Доступ запрещён.\n\nВаш ID: ${ctx.from.id}\nОтпр
 |---------|---------|--------|----------|
 | `/start` | start.js | Все* | Приветствие + меню агентов (авторизованным), user_id (остальным) |
 | `/help` | start.js | Auth | Список команд и описание агентов |
-| `/reset` | message.js | Auth | Очистить message_history в сессии |
-| `/new` | message.js | Auth | Начать новый диалог (сброс контекста агента) |
-| `/switch` | agent.js | Auth | Показать меню выбора агента |
+| `/reset` | message.js | Auth | Показать меню выбора агента (сменить агента) |
+| `/new` | message.js | Auth | Начать новый диалог: очистить message_history |
 | `/grant {id}` | admin.js | Owner | Добавить пользователя в access_list |
 | `/revoke {id}` | admin.js | Owner | Деактивировать пользователя |
-| `/upload` | message.js | Owner | Загрузить документ в RAG |
+| `/upload` | admin.js | Owner | Загрузить документ в RAG |
 | `/users` | admin.js | Owner | Список активных пользователей |
-| `/status` | admin.js | Owner | Статистика: пользователи, документы, API usage |
+| `/stats` (alias `/status`) | admin.js | Owner | Статистика: пользователи, документы, API usage |
 
 *`/start` доступен всем, но показывает разный контент.
 

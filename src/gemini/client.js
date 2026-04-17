@@ -19,6 +19,25 @@ const SAFETY_SETTINGS = [
   { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
 ];
 
+const FORMATTING_INSTRUCTIONS = `
+
+Оформление ответа:
+- Не используй markdown-разметку: ни **жирного**, ни *курсива*, ни заголовков с #.
+- Используй обычный дефис "-" вместо длинного тире "—" или среднего "–".
+- Для списков используй дефис с пробелом: "- пункт".
+- Добавляй 1-2 подходящих эмодзи в начале смысловых блоков (вступление, список, итог), но не переусердствуй и не ставь эмодзи в каждую строку.`;
+
+function formatForTelegram(text) {
+  if (!text) return text;
+  return text
+    .replace(/\*\*/g, '')
+    .replace(/^\s*\*\s+/gm, '- ')
+    .replace(/\*/g, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/[—–]/g, '-')
+    .replace(/-{2,}/g, '-');
+}
+
 export async function generateResponse({ userMessage, systemPrompt, ragContext, messageHistory = [] }) {
   const gate = await checkGlobalCounter();
   if (!gate.allowed) {
@@ -40,6 +59,7 @@ export async function generateResponse({ userMessage, systemPrompt, ragContext, 
     if (ragContext) {
       fullSystemPrompt += `\n\nКонтекст из базы знаний:\n${ragContext}`;
     }
+    fullSystemPrompt += FORMATTING_INSTRUCTIONS;
 
     const response = await ai.models.generateContent({
       model: MODEL,
@@ -52,14 +72,16 @@ export async function generateResponse({ userMessage, systemPrompt, ragContext, 
       },
     }, { signal: controller.signal });
 
-    const text = response.text;
-    if (!text) throw new Error('GEMINI_EMPTY_RESPONSE');
+    const rawText = response.text;
+    if (!rawText) throw new Error('GEMINI_EMPTY_RESPONSE');
+    const text = formatForTelegram(rawText);
 
     const count = await incrementGlobalCounter().catch(() => null);
     const limit = parseInt(process.env.DAILY_API_LIMIT, 10) || 250;
     const warning = count !== null && count >= Math.floor(limit * 0.8);
     return { text, count, warning };
   } catch (error) {
+    console.error(`[GEMINI] model=${MODEL} status=${error.status} code=${error.code} name=${error.name} message=${error.message}`);
     if (error.name === 'AbortError') {
       throw new Error('GEMINI_TIMEOUT');
     }

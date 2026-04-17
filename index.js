@@ -11,8 +11,9 @@ import { messageHandler } from './src/bot/handlers/message.js';
 const { BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET, PORT = '3000' } = process.env;
 
 if (!BOT_TOKEN) throw new Error('Missing BOT_TOKEN');
-if (!WEBHOOK_URL) throw new Error('Missing WEBHOOK_URL');
-if (!WEBHOOK_SECRET) throw new Error('Missing WEBHOOK_SECRET');
+
+const useWebhook = Boolean(WEBHOOK_URL);
+if (useWebhook && !WEBHOOK_SECRET) throw new Error('Missing WEBHOOK_SECRET');
 
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
@@ -20,8 +21,10 @@ const app = express();
 // Health check
 app.get('/health', (_req, res) => res.sendStatus(200));
 
-// Webhook with secret token validation
-app.use(bot.webhookCallback('/webhook', { secretToken: WEBHOOK_SECRET }));
+// Webhook with secret token validation (prod only)
+if (useWebhook) {
+  app.use(bot.webhookCallback('/webhook', { secretToken: WEBHOOK_SECRET }));
+}
 
 // Middleware: only private chats
 bot.use(async (ctx, next) => {
@@ -39,12 +42,64 @@ adminHandler(bot);
 agentHandler(bot);
 messageHandler(bot);
 
+const PUBLIC_COMMANDS = [
+  { command: 'start', description: 'Главное меню' },
+  { command: 'help', description: 'Описание агентов' },
+  { command: 'reset', description: 'Сменить агента' },
+  { command: 'new', description: 'Начать новый диалог (очистить историю)' },
+];
+
+const OWNER_ONLY_COMMANDS = [
+  { command: 'grant', description: 'Выдать доступ партнёру' },
+  { command: 'revoke', description: 'Отозвать доступ' },
+  { command: 'users', description: 'Список партнёров' },
+  { command: 'stats', description: 'Статистика использования' },
+  { command: 'upload', description: 'Загрузить документ в базу знаний' },
+];
+
+const OWNER_COMMANDS = [...PUBLIC_COMMANDS, ...OWNER_ONLY_COMMANDS];
+
+function getAdminIds() {
+  const owner = process.env.OWNER_CHAT_ID;
+  const admins = (process.env.ADMIN_CHAT_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set([owner, ...admins].filter(Boolean))];
+}
+
+async function registerCommandScopes() {
+  // Default scope - все пользователи видят 4 публичные команды
+  await bot.telegram.setMyCommands(PUBLIC_COMMANDS, {
+    scope: { type: 'default' },
+  });
+
+  // Chat scope - владелец и администраторы видят расширенный набор
+  for (const id of getAdminIds()) {
+    await bot.telegram.setMyCommands(OWNER_COMMANDS, {
+      scope: { type: 'chat', chat_id: Number(id) },
+    });
+  }
+}
+
 // Launch
 const server = app.listen(Number(PORT), async () => {
-  await bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`, {
-    secret_token: WEBHOOK_SECRET,
-  });
-  console.log(`[BOOT] Bot running on port ${PORT}, webhook set`);
+  try {
+    await registerCommandScopes();
+  } catch (e) {
+    console.error(`[BOOT] setMyCommands error: ${e.message}`);
+  }
+
+  if (useWebhook) {
+    await bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`, {
+      secret_token: WEBHOOK_SECRET,
+    });
+    console.log(`[BOOT] Bot running on port ${PORT}, webhook set`);
+  } else {
+    await bot.telegram.deleteWebhook();
+    bot.launch();
+    console.log(`[BOOT] Bot running on port ${PORT}, long polling`);
+  }
 });
 
 // Graceful shutdown
