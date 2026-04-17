@@ -1,7 +1,7 @@
 import { embedQuery } from './embed.js';
 import { matchDocuments } from '../db/queries.js';
 
-const TOP_K = 3;
+const TOP_K = 2;
 const MIN_SCORE = 0.55;
 
 export async function retrieveContext(query, agentType) {

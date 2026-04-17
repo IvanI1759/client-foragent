@@ -3,8 +3,8 @@ import pdf from 'pdf-parse';
 import mammoth from 'mammoth';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const CHUNK_SIZE_TOKENS = 500;
-const CHUNK_OVERLAP_TOKENS = 50;
+const CHUNK_SIZE_TOKENS = 300;
+const CHUNK_OVERLAP_TOKENS = 30;
 const CHARS_PER_TOKEN = 4;
 const CHUNK_SIZE_CHARS = CHUNK_SIZE_TOKENS * CHARS_PER_TOKEN;
 const CHUNK_OVERLAP_CHARS = CHUNK_OVERLAP_TOKENS * CHARS_PER_TOKEN;

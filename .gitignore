@@ -24,3 +24,4 @@ Thumbs.db
 # Claude Code
 CLAUDE.local.md
 .claude/settings.local.json
+.claude/scheduled_tasks.lock

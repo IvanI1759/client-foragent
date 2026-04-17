@@ -4,10 +4,15 @@ import {
   revokeAccess,
   listActiveUsers,
   deleteDocumentsByFilename,
+  deleteDocumentsByFilenameForAgents,
   insertDocumentChunks,
   renameDocuments,
   listDocuments,
   getStats,
+  savePendingUpload,
+  getPendingUpload,
+  deletePendingUpload,
+  recordAuditEvent,
 } from '../../db/queries.js';
 import { invalidateCache } from '../middleware/auth.js';
 import { isAdmin } from '../admins.js';
@@ -24,7 +29,40 @@ const AGENT_NAMES = {
   consultant: 'Консультант',
 };
 
-const pendingUploads = new Map();
+function logDetailedError(scope, error, extra = {}) {
+  const details = {
+    message: error?.message,
+    code: error?.code,
+    status: error?.status,
+    details: error?.details,
+    hint: error?.hint,
+    cause: error?.cause?.message || error?.cause,
+    ...extra,
+  };
+  console.error(`[${scope}]`, details);
+  if (error?.stack) {
+    console.error(`[${scope}] stack:`, error.stack);
+  }
+}
+
+function formatErrorDetails(error) {
+  const parts = [
+    error?.message ? `message=${error.message}` : null,
+    error?.code ? `code=${error.code}` : null,
+    error?.status ? `status=${error.status}` : null,
+    error?.details ? `details=${error.details}` : null,
+    error?.hint ? `hint=${error.hint}` : null,
+    error?.cause?.message ? `cause=${error.cause.message}` : null,
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join('\n') : 'details=none';
+}
+
+function auditBestEffort(eventType, options) {
+  recordAuditEvent(eventType, options).catch((error) => {
+    console.error(`[AUDIT] event=${eventType} error=${error.message}`);
+  });
+}
 
 function parseUserId(text) {
   const match = text?.match(/^\/\w+\s+(-?\d+)/);
@@ -76,6 +114,11 @@ export function adminHandler(bot) {
     try {
       await grantAccess(targetId, ctx.from.id);
       invalidateCache(targetId);
+      auditBestEffort('access_granted', {
+        severity: 'info',
+        actorUserId: ctx.from.id,
+        targetUserId: targetId,
+      });
       await ctx.reply(`Доступ выдан пользователю ${targetId}`);
     } catch (e) {
       console.error(`[GRANT] user_id=${ctx.from.id} error`);
@@ -93,6 +136,13 @@ export function adminHandler(bot) {
     try {
       const found = await revokeAccess(targetId);
       invalidateCache(targetId);
+      if (found) {
+        auditBestEffort('access_revoked', {
+          severity: 'warning',
+          actorUserId: ctx.from.id,
+          targetUserId: targetId,
+        });
+      }
       await ctx.reply(
         found
           ? `Доступ отозван у пользователя ${targetId}`
@@ -156,15 +206,28 @@ export function adminHandler(bot) {
     if (!isAdmin(ctx)) return;
     const doc = ctx.message.document;
     if (!doc) return;
+    console.log(
+      `[UPLOAD] document_received user_id=${ctx.from.id} file_name=${doc.file_name} file_size=${doc.file_size || 0}`
+    );
 
     if (doc.file_size && doc.file_size > 10 * 1024 * 1024) {
+      auditBestEffort('upload_rejected_too_large', {
+        severity: 'warning',
+        actorUserId: ctx.from.id,
+        meta: { filename: doc.file_name, fileSize: doc.file_size },
+      });
       return ctx.reply('Файл слишком большой (максимум 10 МБ).');
     }
 
-    pendingUploads.set(ctx.from.id, {
-      fileId: doc.file_id,
-      filename: doc.file_name || `file_${Date.now()}`,
-      createdAt: Date.now(),
+    await savePendingUpload(
+      ctx.from.id,
+      doc.file_id,
+      doc.file_name || `file_${Date.now()}`
+    );
+    auditBestEffort('upload_pending_created', {
+      severity: 'info',
+      actorUserId: ctx.from.id,
+      meta: { filename: doc.file_name, fileSize: doc.file_size || 0 },
     });
 
     await ctx.reply(
@@ -178,10 +241,15 @@ export function adminHandler(bot) {
     if (!isAdmin(ctx)) return ctx.answerCbQuery();
 
     const choice = ctx.match[1];
-    const pending = pendingUploads.get(ctx.from.id);
+    const pending = await getPendingUpload(ctx.from.id).catch(() => null);
 
     if (choice === 'cancel') {
-      pendingUploads.delete(ctx.from.id);
+      await deletePendingUpload(ctx.from.id).catch(() => {});
+      auditBestEffort('upload_cancelled', {
+        severity: 'info',
+        actorUserId: ctx.from.id,
+        meta: { filename: pending?.filename || null },
+      });
       await ctx.answerCbQuery('Отменено');
       return ctx.editMessageText('Загрузка отменена.');
     }
@@ -199,18 +267,31 @@ export function adminHandler(bot) {
       ? `всех агентов (${UPLOAD_TARGETS.length})`
       : `агента ${AGENT_NAMES[choice]}`;
 
+    console.log(
+      `[UPLOAD] selection user_id=${ctx.from.id} filename=${pending.filename} target=${choice} mode=${isAll ? 'all' : 'single'}`
+    );
     await ctx.answerCbQuery();
     await ctx.editMessageText(`Обработка файла «${pending.filename}» для ${targetLabel}...`);
 
     try {
-      const buffer = await downloadFile(ctx, pending.fileId);
+      console.log(`[UPLOAD] step=download user_id=${ctx.from.id} filename=${pending.filename}`);
+      const buffer = await downloadFile(ctx, pending.file_id);
+      console.log(
+        `[UPLOAD] step=ingest user_id=${ctx.from.id} filename=${pending.filename} bytes=${buffer.length}`
+      );
       const { chunks, safeName } = await ingestFile(buffer, pending.filename);
+      console.log(
+        `[UPLOAD] step=embed_prepare user_id=${ctx.from.id} filename=${safeName} chunks=${chunks.length} agents=${targetAgents.join(',')}`
+      );
 
       // Re-upload safe flow: сначала embed+insert под временным именем,
       // потом DELETE старых чанков и RENAME tmp → финальное имя.
       // Если embed/insert упадёт - старые данные нетронуты.
       const tmpName = `${safeName}__tmp_${Date.now()}`;
       const embeddings = await embedChunks(chunks);
+      console.log(
+        `[UPLOAD] step=embed_done user_id=${ctx.from.id} filename=${safeName} embeddings=${embeddings.length}`
+      );
       const rows = [];
       for (const agent of targetAgents) {
         for (let i = 0; i < chunks.length; i++) {
@@ -224,33 +305,80 @@ export function adminHandler(bot) {
       }
 
       try {
+        console.log(
+          `[UPLOAD] step=insert_tmp user_id=${ctx.from.id} tmp=${tmpName} rows=${rows.length}`
+        );
         await insertDocumentChunks(rows);
-        await deleteDocumentsByFilename(safeName);
+        console.log(
+          `[UPLOAD] step=delete_old user_id=${ctx.from.id} filename=${safeName} agents=${targetAgents.join(',')}`
+        );
+        await deleteDocumentsByFilenameForAgents(safeName, targetAgents);
+        console.log(
+          `[UPLOAD] step=rename_tmp user_id=${ctx.from.id} from=${tmpName} to=${safeName}`
+        );
         await renameDocuments(tmpName, safeName);
       } catch (commitErr) {
+        logDetailedError('UPLOAD_COMMIT', commitErr, {
+          userId: ctx.from.id,
+          filename: safeName,
+          tmpName,
+          targetAgents,
+        });
         await deleteDocumentsByFilename(tmpName).catch(() => {});
         throw commitErr;
       }
 
-      pendingUploads.delete(ctx.from.id);
+      await deletePendingUpload(ctx.from.id).catch(() => {});
       const countLabel = isAll
         ? `${chunks.length} чанков × ${targetAgents.length} агентов`
         : `${chunks.length} чанков для агента ${AGENT_NAMES[choice]}`;
+      auditBestEffort('upload_completed', {
+        severity: 'info',
+        actorUserId: ctx.from.id,
+        meta: {
+          filename: safeName,
+          chunks: chunks.length,
+          targetAgents,
+        },
+      });
+      console.log(
+        `[UPLOAD] success user_id=${ctx.from.id} filename=${safeName} result=${countLabel}`
+      );
       await ctx.reply(`Документ «${safeName}» загружен: ${countLabel}`);
     } catch (e) {
-      pendingUploads.delete(ctx.from.id);
-      console.error(`[UPLOAD] user_id=${ctx.from.id} error=${e.message}`);
+      await deletePendingUpload(ctx.from.id).catch(() => {});
+      logDetailedError('UPLOAD', e, {
+        userId: ctx.from.id,
+        filename: pending?.filename,
+        choice,
+      });
+      auditBestEffort('upload_failed', {
+        severity: 'error',
+        actorUserId: ctx.from.id,
+        meta: {
+          filename: pending?.filename || null,
+          choice,
+          message: e?.message || 'unknown',
+          code: e?.code || null,
+        },
+      });
       const messages = {
         FILE_EMPTY: 'Файл пустой.',
         FILE_TOO_LARGE: 'Файл больше 10 МБ.',
         FILE_UNSUPPORTED_TYPE: 'Неподдерживаемый тип файла (допустимы PDF, DOCX, TXT).',
         FILE_NO_CONTENT: 'Не удалось извлечь текст из файла.',
         FILE_DOWNLOAD_FAILED: 'Не удалось скачать файл.',
+        GEMINI_GLOBAL_LIMIT: 'Дневной лимит API исчерпан. Попробуйте позже.',
         GEMINI_TIMEOUT: 'Превышено время ожидания API.',
         GEMINI_RATE_LIMIT: 'Слишком много запросов, подождите минуту.',
         GEMINI_SERVER_ERROR: 'Сервис временно недоступен.',
       };
-      await ctx.reply(messages[e.message] || 'Ошибка при загрузке документа.');
+      const humanMessage = messages[e.message] || 'Ошибка при загрузке документа.';
+      const debugMessage =
+        `${humanMessage}\n\n` +
+        `Технические детали:\n` +
+        `${formatErrorDetails(e)}`;
+      await ctx.reply(debugMessage);
     }
   });
 
@@ -282,6 +410,11 @@ export function adminHandler(bot) {
     const filename = sanitizeFilename(parts.slice(1).join(' ').trim());
     try {
       await deleteDocumentsByFilename(filename);
+      auditBestEffort('document_deleted', {
+        severity: 'warning',
+        actorUserId: ctx.from.id,
+        meta: { filename },
+      });
       await ctx.reply(`Документ «${filename}» удалён`);
     } catch (e) {
       console.error(`[DELETE_DOC] user_id=${ctx.from.id} error`);

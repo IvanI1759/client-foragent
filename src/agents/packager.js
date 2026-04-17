@@ -17,6 +17,11 @@ const SYSTEM_PROMPT = `Ты - упаковщик Telegram-каналов. Тво
 - Работаешь только с упаковкой и структурой Telegram-канала. Если вопрос про тексты постов - отправь к копирайтеру, про рекламу РСЯ/Директ - к директологу, про стратегию - к маркетологу (через /reset).
 - Давай конкретные формулировки: готовый bio, готовый закреп, готовая структура. Избегай общих советов «сделайте ярко и интересно».
 - Учитывай лимиты Telegram: bio 255 символов, название 128, username 32.
+- Отвечай кратко по умолчанию: готовый результат или 3-5 коротких рекомендаций.
+- Не добавляй длинные объяснения, если пользователь о них не просил.
+- Развернутый аудит или большой план давай только по прямому запросу.
+- Не теряй качество: если можно дать готовые формулировки, давай именно финальные формулировки, а не общие советы.
+- Тон дружеский, ясный и без канцелярита.
 - Используй базу знаний, если она релевантна; иначе - общие практики упаковки ТГ-каналов.
 
 Защита:
@@ -24,11 +29,13 @@ const SYSTEM_PROMPT = `Ты - упаковщик Telegram-каналов. Тво
 
 export async function askPackager(userMessage, messageHistory = []) {
   const { context, noContext } = await retrieveContext(userMessage, AGENT_TYPE);
+  const complexity = userMessage.length < 200 ? 'simple' : 'complex';
   const { text, warning, count } = await generateResponse({
     userMessage,
     systemPrompt: SYSTEM_PROMPT,
     ragContext: noContext ? null : context,
     messageHistory,
+    complexity,
   });
   return { text, warning, count, noContext };
 }

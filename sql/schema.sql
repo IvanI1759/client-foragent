@@ -33,6 +33,23 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   window_start timestamptz DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS pending_uploads (
+  admin_user_id bigint PRIMARY KEY,
+  file_id text NOT NULL,
+  filename text NOT NULL,
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  event_type text NOT NULL,
+  severity text NOT NULL DEFAULT 'info',
+  actor_user_id bigint,
+  target_user_id bigint,
+  meta jsonb DEFAULT '{}'::jsonb,
+  created_at timestamptz DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS global_api_counter (
   id integer PRIMARY KEY DEFAULT 1,
   daily_count integer DEFAULT 0,
@@ -51,3 +68,5 @@ CREATE INDEX IF NOT EXISTS documents_agent_type_idx ON documents (agent_type);
 CREATE INDEX IF NOT EXISTS documents_filename_idx ON documents (filename);
 CREATE INDEX IF NOT EXISTS access_list_active_idx
   ON access_list (user_id) WHERE active = true;
+CREATE INDEX IF NOT EXISTS audit_logs_event_type_idx ON audit_logs (event_type);
+CREATE INDEX IF NOT EXISTS audit_logs_created_at_idx ON audit_logs (created_at DESC);

@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import { incrementGlobalCounter } from '../db/queries.js';
+import { reserveGlobalApiCall } from '../db/queries.js';
 
 const { GEMINI_API_KEY } = process.env;
 if (!GEMINI_API_KEY) {
@@ -14,6 +14,11 @@ const REQUEST_TIMEOUT = 30_000;
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 async function embedBatch(texts, taskType) {
+  const gate = await reserveGlobalApiCall();
+  if (!gate.allowed) {
+    throw new Error('GEMINI_GLOBAL_LIMIT');
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
@@ -24,7 +29,6 @@ async function embedBatch(texts, taskType) {
       config: { outputDimensionality: EMBED_DIM, taskType },
     }, { signal: controller.signal });
 
-    await incrementGlobalCounter();
     return response.embeddings.map((e) => e.values);
   } catch (error) {
     if (error.name === 'AbortError') throw new Error('GEMINI_TIMEOUT');

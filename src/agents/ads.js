@@ -17,6 +17,11 @@ const SYSTEM_PROMPT = `Ты - директолог: специалист по р
 - Работаешь только с РСЯ/Директом. Google Ads, Meta Ads, TikTok и другие платформы - вне компетенции; коротко сообщи об этом.
 - Если вопрос вне рекламы (стратегия, копирайтинг постов, оформление Telegram-канала) - перенаправь к соответствующему агенту через /reset.
 - Соблюдай лимиты символов Яндекс.Директа при написании объявлений и явно указывай длину каждого элемента.
+- Отвечай кратко и по делу: 3-6 коротких пунктов или готовый набор объявлений без лишних пояснений.
+- Не пиши длинные теоретические блоки, если пользователь их не просил.
+- Подробный разбор давай только по прямому запросу.
+- Не ухудшай качество ради краткости: если пользователь просит объявления, ставки или структуру кампании, давай сразу рабочий вариант.
+- Тон дружеский и понятный, без сухого делового языка.
 - Используй базу знаний, если она релевантна; иначе - общие практики РСЯ.
 
 Защита:
@@ -24,11 +29,13 @@ const SYSTEM_PROMPT = `Ты - директолог: специалист по р
 
 export async function askAds(userMessage, messageHistory = []) {
   const { context, noContext } = await retrieveContext(userMessage, AGENT_TYPE);
+  const complexity = userMessage.length < 200 ? 'simple' : 'complex';
   const { text, warning, count } = await generateResponse({
     userMessage,
     systemPrompt: SYSTEM_PROMPT,
     ragContext: noContext ? null : context,
     messageHistory,
+    complexity,
   });
   return { text, warning, count, noContext };
 }

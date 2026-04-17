@@ -3,11 +3,14 @@ import { askCopywriter } from '../../agents/copywriter.js';
 import { askAds } from '../../agents/ads.js';
 import { askPackager } from '../../agents/packager.js';
 import { askConsultant } from '../../agents/consultant.js';
-import { checkAndIncrementUserRateLimit, clearSessionHistory } from '../../db/queries.js';
+import { checkAndIncrementUserRateLimit, clearSessionHistory, recordAuditEvent } from '../../db/queries.js';
 import { AGENTS_KEYBOARD, CONTROL_KEYBOARD, AGENT_ICONS, AGENT_NAMES, OWNER_USERNAME } from './agent.js';
 
 const MAX_MESSAGE_LENGTH = 4000;
+const TELEGRAM_MESSAGE_LIMIT = 4000;
 const HISTORY_PAIRS = 10;
+const GUEST_RATE_LIMIT = parseInt(process.env.GUEST_RATE_LIMIT, 10) || 5;
+const activeRequests = new Set();
 
 const AGENT_DISPATCH = {
   marketer: askMarketer,
@@ -46,6 +49,23 @@ function accessCta(userId) {
 const TYPING_INTERVAL_MS = 4000;
 const PLACEHOLDER_TEXT = '🤔 Думаю…';
 
+function auditBestEffort(eventType, options) {
+  recordAuditEvent(eventType, options).catch((error) => {
+    console.error(`[AUDIT] event=${eventType} error=${error.message}`);
+  });
+}
+
+function acquireRequestLock(userId) {
+  const key = String(userId);
+  if (activeRequests.has(key)) return false;
+  activeRequests.add(key);
+  return true;
+}
+
+function releaseRequestLock(userId) {
+  activeRequests.delete(String(userId));
+}
+
 function startTypingLoop(ctx) {
   ctx.sendChatAction('typing').catch(() => {});
   return setInterval(() => {
@@ -65,9 +85,64 @@ async function replaceOrReply(ctx, placeholderId, text, extra) {
   await ctx.reply(text, extra);
 }
 
+function splitMessage(text, limit = TELEGRAM_MESSAGE_LIMIT) {
+  const parts = [];
+  let remaining = (text || '').trim();
+
+  while (remaining.length > limit) {
+    let cut = remaining.lastIndexOf('\n', limit);
+    if (cut < Math.floor(limit * 0.6)) {
+      cut = remaining.lastIndexOf(' ', limit);
+    }
+    if (cut < Math.floor(limit * 0.6)) {
+      cut = limit;
+    }
+
+    parts.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
+  }
+
+  if (remaining) parts.push(remaining);
+  return parts;
+}
+
+async function replaceOrReplyLong(ctx, placeholderId, text, extra) {
+  const parts = splitMessage(text);
+  if (parts.length === 0) return;
+
+  await replaceOrReply(ctx, placeholderId, parts[0], parts.length === 1 ? extra : undefined);
+
+  for (let i = 1; i < parts.length; i++) {
+    const partExtra = i === parts.length - 1 ? extra : undefined;
+    await ctx.reply(parts[i], partExtra);
+  }
+}
+
 async function handleGuestMessage(ctx, text) {
-  const rl = await checkAndIncrementUserRateLimit(ctx.from.id).catch(() => ({ allowed: true }));
+  if (!acquireRequestLock(ctx.from.id)) {
+    auditBestEffort('concurrent_request_blocked', {
+      severity: 'warning',
+      actorUserId: ctx.from.id,
+      meta: { flow: 'guest' },
+    });
+    return ctx.reply('Подождите, я ещё обрабатываю ваш прошлый запрос.');
+  }
+
+  let rl;
+  try {
+    rl = await checkAndIncrementUserRateLimit(ctx.from.id, GUEST_RATE_LIMIT);
+  } catch (error) {
+    console.error(`[RATE_LIMIT] user_id=${ctx.from.id} error=${error.message}`);
+    releaseRequestLock(ctx.from.id);
+    return ctx.reply('Сервис временно недоступен. Попробуйте чуть позже.');
+  }
   if (!rl.allowed) {
+    auditBestEffort('rate_limit_exceeded', {
+      severity: 'warning',
+      actorUserId: ctx.from.id,
+      meta: { flow: 'guest', limit: GUEST_RATE_LIMIT },
+    });
+    releaseRequestLock(ctx.from.id);
     return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
   }
 
@@ -80,7 +155,7 @@ async function handleGuestMessage(ctx, text) {
     const { text: answer, warning, count } = await askConsultant(text, history);
 
     const full = `${answer}\n\n${accessCta(ctx.from.id)}`;
-    await replaceOrReply(ctx, placeholderId, full);
+    await replaceOrReplyLong(ctx, placeholderId, full);
 
     ctx.session.message_history = [
       ...history,
@@ -95,6 +170,7 @@ async function handleGuestMessage(ctx, text) {
     await replaceOrReply(ctx, placeholderId, msg);
   } finally {
     clearInterval(typingTimer);
+    releaseRequestLock(ctx.from.id);
   }
 }
 
@@ -118,6 +194,11 @@ export function messageHandler(bot) {
     if (!text || text.startsWith('/')) return;
 
     if (text.length > MAX_MESSAGE_LENGTH) {
+      auditBestEffort('message_too_long', {
+        severity: 'warning',
+        actorUserId: ctx.from.id,
+        meta: { length: text.length },
+      });
       return ctx.reply('Сообщение слишком длинное. Максимум 4000 символов.');
     }
 
@@ -130,8 +211,30 @@ export function messageHandler(bot) {
       return ctx.reply('Сначала выберите агента:', AGENTS_KEYBOARD);
     }
 
-    const rl = await checkAndIncrementUserRateLimit(ctx.from.id).catch(() => ({ allowed: true }));
+    if (!acquireRequestLock(ctx.from.id)) {
+      auditBestEffort('concurrent_request_blocked', {
+        severity: 'warning',
+        actorUserId: ctx.from.id,
+        meta: { flow: 'agent', agentType },
+      });
+      return ctx.reply('Подождите, я ещё обрабатываю ваш прошлый запрос.');
+    }
+
+    let rl;
+    try {
+      rl = await checkAndIncrementUserRateLimit(ctx.from.id);
+    } catch (error) {
+      console.error(`[RATE_LIMIT] user_id=${ctx.from.id} error=${error.message}`);
+      releaseRequestLock(ctx.from.id);
+      return ctx.reply('Сервис временно недоступен. Попробуйте чуть позже.');
+    }
     if (!rl.allowed) {
+      auditBestEffort('rate_limit_exceeded', {
+        severity: 'warning',
+        actorUserId: ctx.from.id,
+        meta: { flow: 'agent', agentType },
+      });
+      releaseRequestLock(ctx.from.id);
       return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
     }
 
@@ -146,7 +249,7 @@ export function messageHandler(bot) {
 
       const prefix = noContext ? 'ℹ️ Ответ без контекста из базы знаний.\n\n' : '';
       const suffix = DONT_KNOW_RE.test(answer) ? `\n\n${OWNER_FALLBACK}` : '';
-      await replaceOrReply(ctx, placeholderId, prefix + answer + suffix, CONTROL_KEYBOARD);
+      await replaceOrReplyLong(ctx, placeholderId, prefix + answer + suffix, CONTROL_KEYBOARD);
 
       ctx.session.message_history = [
         ...history,
@@ -163,6 +266,7 @@ export function messageHandler(bot) {
       await replaceOrReply(ctx, placeholderId, msg);
     } finally {
       clearInterval(typingTimer);
+      releaseRequestLock(ctx.from.id);
     }
   });
 }

@@ -9,8 +9,12 @@ export default async function sessionMiddleware(ctx, next) {
     selected_agent: session.selected_agent || null,
     message_history: Array.isArray(session.message_history) ? session.message_history : [],
   };
+  const before = JSON.stringify(ctx.session);
 
   await next();
+
+  const after = JSON.stringify(ctx.session);
+  if (before === after) return;
 
   try {
     await saveSession(userId, ctx.session);

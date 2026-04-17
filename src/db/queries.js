@@ -86,47 +86,37 @@ export async function clearSessionHistory(userId) {
 
 // ---------- user rate limit ----------
 
-export async function checkAndIncrementUserRateLimit(userId) {
-  const limit = parseInt(process.env.USER_RATE_LIMIT, 10) || 20;
-  const now = new Date();
-  const windowMs = 60 * 60 * 1000;
+export async function checkAndIncrementUserRateLimit(userId, limitOverride = null) {
+  const limit = limitOverride ?? (parseInt(process.env.USER_RATE_LIMIT, 10) || 20);
+  const { data, error } = await supabase.rpc('check_and_increment_user_rate_limit', {
+    p_user_id: userId,
+    p_limit: limit,
+    p_window_seconds: 60 * 60,
+  });
+  if (error) throw error;
 
-  const { data, error: readErr } = await supabase
-    .from('rate_limits')
-    .select('request_count, window_start')
-    .eq('user_id', userId)
-    .maybeSingle();
-  if (readErr) throw readErr;
-
-  const windowStart = data ? new Date(data.window_start) : null;
-  const expired = !windowStart || now - windowStart > windowMs;
-  const current = expired ? 0 : data.request_count;
-
-  if (current >= limit) {
-    const resetAt = new Date(windowStart.getTime() + windowMs);
-    return { allowed: false, remaining: 0, resetAt };
-  }
-
-  const newCount = current + 1;
-  const { error: upErr } = await supabase
-    .from('rate_limits')
-    .upsert(
-      {
-        user_id: userId,
-        request_count: newCount,
-        window_start: expired ? now.toISOString() : data.window_start,
-      },
-      { onConflict: 'user_id' }
-    );
-  if (upErr) throw upErr;
-
-  return { allowed: true, remaining: limit - newCount };
+  const row = Array.isArray(data) ? data[0] : data;
+  return {
+    allowed: !!row?.allowed,
+    remaining: row?.remaining ?? 0,
+    resetAt: row?.reset_at ? new Date(row.reset_at) : null,
+  };
 }
 
 // ---------- documents ----------
 
 export async function deleteDocumentsByFilename(filename) {
   const { error } = await supabase.from('documents').delete().eq('filename', filename);
+  if (error) throw error;
+}
+
+export async function deleteDocumentsByFilenameForAgents(filename, agents) {
+  if (!agents || agents.length === 0) return;
+  const { error } = await supabase
+    .from('documents')
+    .delete()
+    .eq('filename', filename)
+    .in('agent_type', agents);
   if (error) throw error;
 }
 
@@ -209,6 +199,78 @@ export async function incrementGlobalCounter() {
   const { data, error } = await supabase.rpc('increment_api_counter');
   if (error) throw error;
   return data;
+}
+
+export async function reserveGlobalApiCall() {
+  const limit = parseInt(process.env.DAILY_API_LIMIT, 10) || 250;
+  const { data, error } = await supabase.rpc('reserve_global_api_call', {
+    p_limit: limit,
+  });
+  if (error) throw error;
+
+  const row = Array.isArray(data) ? data[0] : data;
+  return {
+    allowed: !!row?.allowed,
+    count: row?.count ?? 0,
+    resetDate: row?.reset_date ?? null,
+    limit,
+    warning: (row?.count ?? 0) >= Math.floor(limit * 0.8),
+  };
+}
+
+// ---------- pending_uploads ----------
+
+export async function savePendingUpload(userId, fileId, filename) {
+  const { error } = await supabase
+    .from('pending_uploads')
+    .upsert(
+      {
+        admin_user_id: userId,
+        file_id: fileId,
+        filename,
+        created_at: new Date().toISOString(),
+      },
+      { onConflict: 'admin_user_id' }
+    );
+  if (error) throw error;
+}
+
+export async function getPendingUpload(userId) {
+  const { data, error } = await supabase
+    .from('pending_uploads')
+    .select('admin_user_id, file_id, filename, created_at')
+    .eq('admin_user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+export async function deletePendingUpload(userId) {
+  const { error } = await supabase
+    .from('pending_uploads')
+    .delete()
+    .eq('admin_user_id', userId);
+  if (error) throw error;
+}
+
+// ---------- audit_logs ----------
+
+export async function recordAuditEvent(eventType, {
+  severity = 'info',
+  actorUserId = null,
+  targetUserId = null,
+  meta = {},
+} = {}) {
+  const { error } = await supabase
+    .from('audit_logs')
+    .insert({
+      event_type: eventType,
+      severity,
+      actor_user_id: actorUserId,
+      target_user_id: targetUserId,
+      meta,
+    });
+  if (error) throw error;
 }
 
 // ---------- stats ----------
