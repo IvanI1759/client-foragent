@@ -157,6 +157,8 @@ export function messageHandler(bot) {
       if (warning) await notifyOwner(ctx, count ?? '~80%');
     } catch (e) {
       console.error(`[AGENT] user_id=${ctx.from.id} agent=${agentType} error=${e.message}`);
+      console.error('[AGENT] stack:', e.stack);
+      if (e.cause) console.error('[AGENT] cause:', e.cause);
       const msg = ERROR_MESSAGES[e.message] || 'Ошибка при обработке запроса.';
       await replaceOrReply(ctx, placeholderId, msg);
     } finally {

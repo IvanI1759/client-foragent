@@ -6,6 +6,14 @@ Scope команд настраивается через `bot.telegram.setMyComm
 
 ## Recent Changes
 
+- `src/rag/embed.js`: добавлен параметр `taskType` в `embedBatch`. `embedChunks` использует `RETRIEVAL_DOCUMENT` (для индексации), `embedQuery` - `RETRIEVAL_QUERY` (для поиска). Семантика подсказывает модели роль текста и улучшает качество матчинга.
+- `src/rag/retrieve.js`: `MIN_SCORE` снижен с 0.7 до 0.55. На реальных данных при 0.7 retrieve часто возвращал 0 чанков и агент уходил в `noContext: true`.
+- `src/bot/admins.js` (новый файл): вынесены `getAdminIds()` и `isAdmin(ctx)`. Раньше дублировались в `index.js` и `admin.js`. Имя env-переменной - `ADMIN_IDS` (не `ADMIN_CHAT_IDS`, как в более ранних заметках).
+- `src/bot/middleware/auth.js`: вместо проверки `userId === OWNER_CHAT_ID` теперь `getAdminIds().includes(userId)` и выставляется `ctx.isAdmin = true`. `ctx.isOwner` больше не выставляется.
+- `src/bot/handlers/admin.js`: все `isOwner(ctx)` заменены на `isAdmin(ctx)` (импорт из `../admins.js`). Команды `/grant`, `/revoke`, `/users`, `/stats`, `/upload`, `/list_docs`, `/delete_doc`, приём документа и callback `upload_agent:*` теперь доступны всем админам, а не только владельцу.
+- `index.js`: дублирующий `getAdminIds()` удалён, импортируется из `src/bot/admins.js`.
+- `scripts/` (новая папка): `rag-debug.js` (топ-5 матчей с скорами для запроса), `embed-test.js` (сравнение embeddings с разными taskType), `repro-error.mjs` (полный прогон embed → match → Gemini вне Telegraf для изоляции багов).
+- `src/bot/handlers/message.js`: в catch агентов добавлен лог `e.stack` и `e.cause` для диагностики - на тёмных ошибках вроде `Cannot convert argument to a ByteString` без стека невозможно найти источник.
 - `src/rag/embed.js`: явно задан `config.outputDimensionality: 768` в `ai.models.embedContent`. Модель `gemini-embedding-001` по умолчанию возвращает 3072 мерности (Matryoshka), а колонка `documents.embedding` в Supabase - `vector(768)`. Без этого config upload падал с `expected 768 dimensions, not 3072`.
 - `src/bot/handlers/admin.js`: `downloadFile` теперь ретраит до 3 раз с шагом 1/2/3 сек и логирует каждую попытку (`[DOWNLOAD] attempt=N/3 error=...`). Лечит разовые `fetch failed` на скачивании файла с Telegram-серверов.
 - Consultant получил собственный RAG. `src/agents/consultant.js` теперь вызывает `retrieveContext(query, 'consultant')` и пробрасывает `ragContext` в `generateResponse`; системный промпт обновлён («если есть контекст из базы знаний - опирайся на него»). В `src/bot/handlers/admin.js` добавлен отдельный список `UPLOAD_TARGETS = [...VALID_AGENTS, 'consultant']`, в `AGENT_NAMES` - `consultant: 'Консультант'`, в `UPLOAD_AGENT_KEYBOARD` - кнопка «💬 Консультант (о проекте)». `VALID_AGENTS` не тронут (message.js dispatch и «Все агенты» upload охватывают только 4 основных агента). Консультант остаётся не-выбираемым для авторизованных: маршрут только для гостей через `ctx.isGuest`.

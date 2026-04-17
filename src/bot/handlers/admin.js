@@ -10,6 +10,7 @@ import {
   getStats,
 } from '../../db/queries.js';
 import { invalidateCache } from '../middleware/auth.js';
+import { isAdmin } from '../admins.js';
 import { ingestFile, sanitizeFilename } from '../../rag/ingest.js';
 import { embedChunks } from '../../rag/embed.js';
 
@@ -24,10 +25,6 @@ const AGENT_NAMES = {
 };
 
 const pendingUploads = new Map();
-
-function isOwner(ctx) {
-  return String(ctx.from?.id) === process.env.OWNER_CHAT_ID;
-}
 
 function parseUserId(text) {
   const match = text?.match(/^\/\w+\s+(-?\d+)/);
@@ -71,7 +68,7 @@ const UPLOAD_AGENT_KEYBOARD = Markup.inlineKeyboard([
 export function adminHandler(bot) {
   // /grant <user_id>
   bot.command('grant', async (ctx) => {
-    if (!isOwner(ctx)) return;
+    if (!isAdmin(ctx)) return;
     const targetId = parseUserId(ctx.message.text);
     if (!targetId) {
       return ctx.reply('Использование: /grant {user_id}');
@@ -88,7 +85,7 @@ export function adminHandler(bot) {
 
   // /revoke <user_id>
   bot.command('revoke', async (ctx) => {
-    if (!isOwner(ctx)) return;
+    if (!isAdmin(ctx)) return;
     const targetId = parseUserId(ctx.message.text);
     if (!targetId) {
       return ctx.reply('Использование: /revoke {user_id}');
@@ -109,7 +106,7 @@ export function adminHandler(bot) {
 
   // /users
   bot.command('users', async (ctx) => {
-    if (!isOwner(ctx)) return;
+    if (!isAdmin(ctx)) return;
     try {
       const users = await listActiveUsers();
       if (users.length === 0) {
@@ -128,7 +125,7 @@ export function adminHandler(bot) {
 
   // /stats (и alias /status)
   const statsHandler = async (ctx) => {
-    if (!isOwner(ctx)) return;
+    if (!isAdmin(ctx)) return;
     try {
       const s = await getStats();
       const byAgent = Object.entries(s.documents.byAgent)
@@ -150,13 +147,13 @@ export function adminHandler(bot) {
 
   // /upload - подсказка; владелец отправляет файл документом
   bot.command('upload', async (ctx) => {
-    if (!isOwner(ctx)) return;
+    if (!isAdmin(ctx)) return;
     await ctx.reply('Отправьте файл (PDF, DOCX или TXT, до 10 МБ) как документ.');
   });
 
   // Приём документа (только владелец)
   bot.on('document', async (ctx) => {
-    if (!isOwner(ctx)) return;
+    if (!isAdmin(ctx)) return;
     const doc = ctx.message.document;
     if (!doc) return;
 
@@ -178,7 +175,7 @@ export function adminHandler(bot) {
 
   // Callback выбора агента для upload
   bot.action(/^upload_agent:(.+)$/, async (ctx) => {
-    if (!isOwner(ctx)) return ctx.answerCbQuery();
+    if (!isAdmin(ctx)) return ctx.answerCbQuery();
 
     const choice = ctx.match[1];
     const pending = pendingUploads.get(ctx.from.id);
@@ -259,7 +256,7 @@ export function adminHandler(bot) {
 
   // /list_docs
   bot.command('list_docs', async (ctx) => {
-    if (!isOwner(ctx)) return;
+    if (!isAdmin(ctx)) return;
     try {
       const docs = await listDocuments();
       if (docs.length === 0) {
@@ -277,7 +274,7 @@ export function adminHandler(bot) {
 
   // /delete_doc <filename>
   bot.command('delete_doc', async (ctx) => {
-    if (!isOwner(ctx)) return;
+    if (!isAdmin(ctx)) return;
     const parts = ctx.message.text.split(/\s+/);
     if (parts.length < 2) {
       return ctx.reply('Использование: /delete_doc {filename}');

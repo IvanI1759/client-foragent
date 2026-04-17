@@ -7,6 +7,7 @@ import { startHandler } from './src/bot/handlers/start.js';
 import { adminHandler } from './src/bot/handlers/admin.js';
 import { agentHandler } from './src/bot/handlers/agent.js';
 import { messageHandler } from './src/bot/handlers/message.js';
+import { getAdminIds } from './src/bot/admins.js';
 
 const { BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET, PORT = '3000' } = process.env;
 
@@ -58,15 +59,6 @@ const OWNER_ONLY_COMMANDS = [
 ];
 
 const OWNER_COMMANDS = [...PUBLIC_COMMANDS, ...OWNER_ONLY_COMMANDS];
-
-function getAdminIds() {
-  const owner = process.env.OWNER_CHAT_ID;
-  const admins = (process.env.ADMIN_CHAT_IDS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return [...new Set([owner, ...admins].filter(Boolean))];
-}
 
 async function registerCommandScopes() {
   // Default scope - все пользователи видят 4 публичные команды

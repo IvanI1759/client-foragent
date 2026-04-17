@@ -1,4 +1,5 @@
 import { supabase } from '../../db/supabase.js';
+import { getAdminIds } from '../admins.js';
 
 const authCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
@@ -12,8 +13,8 @@ export default async function authMiddleware(ctx, next) {
 
   const userId = String(ctx.from.id);
 
-  if (userId === process.env.OWNER_CHAT_ID) {
-    ctx.isOwner = true;
+  if (getAdminIds().includes(userId)) {
+    ctx.isAdmin = true;
     return next();
   }
 

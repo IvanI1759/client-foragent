@@ -13,7 +13,7 @@ const REQUEST_TIMEOUT = 30_000;
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-async function embedBatch(texts) {
+async function embedBatch(texts, taskType) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
@@ -21,7 +21,7 @@ async function embedBatch(texts) {
     const response = await ai.models.embedContent({
       model: EMBED_MODEL,
       contents: texts,
-      config: { outputDimensionality: EMBED_DIM },
+      config: { outputDimensionality: EMBED_DIM, taskType },
     }, { signal: controller.signal });
 
     await incrementGlobalCounter();
@@ -40,13 +40,13 @@ export async function embedChunks(chunks) {
   const vectors = [];
   for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
     const batch = chunks.slice(i, i + BATCH_SIZE);
-    const embeddings = await embedBatch(batch);
+    const embeddings = await embedBatch(batch, 'RETRIEVAL_DOCUMENT');
     vectors.push(...embeddings);
   }
   return vectors;
 }
 
 export async function embedQuery(text) {
-  const [vector] = await embedBatch([text]);
+  const [vector] = await embedBatch([text], 'RETRIEVAL_QUERY');
   return vector;
 }
