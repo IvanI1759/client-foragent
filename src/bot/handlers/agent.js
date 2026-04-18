@@ -17,7 +17,7 @@ const AGENT_ICONS = {
   packager: '📦',
 };
 
-const OWNER_USERNAME = '@katburova';
+const OWNER_USERNAME = '@Skyter2026';
 
 const AGENTS_KEYBOARD = Markup.inlineKeyboard([
   [

@@ -8,11 +8,13 @@ if (!GEMINI_API_KEY) {
 }
 
 const COMPLEX_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
-const SIMPLE_MODEL = 'gemini-2.5-flash-lite';
+const SIMPLE_MODEL = process.env.GEMINI_SIMPLE_MODEL || 'gemini-2.5-flash-lite';
 const REQUEST_TIMEOUT = 30_000;
 const SIMPLE_MAX_OUTPUT_TOKENS = 700;
 const COMPLEX_MAX_OUTPUT_TOKENS = 1200;
 const DETAILED_MAX_OUTPUT_TOKENS = 1700;
+const RETRYABLE_STATUSES = new Set([429, 500, 503]);
+const MAX_RETRIES = 2;
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -31,7 +33,8 @@ const FORMATTING_INSTRUCTIONS = `
 - Для списков используй дефис с пробелом: "- пункт".
 - Добавляй 1-2 подходящих эмодзи в начале смысловых блоков, но не в каждую строку.
 - Тон дружелюбный, живой и человеческий: без канцелярита, без сухого делового стиля.
-- Не используй шаблонный заголовок "Коротко:". Просто сразу давай суть естественным языком.`;
+- Не используй шаблонный заголовок "Коротко:". Просто сразу давай суть естественным языком.
+- Не начинай каждый ответ с приветствия вроде "Привет", "Здравствуйте", "Добро пожаловать". Приветствие допустимо только если пользователь сам первым поздоровался или это самый первый ответ после команды /start.`;
 
 function formatForTelegram(text) {
   if (!text) return text;
@@ -48,13 +51,42 @@ function wantsDetailedAnswer(userMessage = '') {
   return /подроб|разверн|распиш|сделай план|по шагам|детально|с примерами/i.test(userMessage);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withGeminiRetry(task) {
+  let lastError;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      if (!RETRYABLE_STATUSES.has(error?.status) || attempt === MAX_RETRIES) {
+        throw error;
+      }
+      await sleep(800 * (attempt + 1));
+    }
+  }
+
+  throw lastError;
+}
+
+function getModelCandidates(complexity) {
+  const primary = complexity === 'simple' ? SIMPLE_MODEL : COMPLEX_MODEL;
+  const fallback = COMPLEX_MODEL;
+  return Array.from(new Set([primary, fallback].filter(Boolean)));
+}
+
 export async function generateResponse({ userMessage, systemPrompt, ragContext, messageHistory = [], complexity = 'complex', maxOutputTokens: maxOutputTokensOverride }) {
   const gate = await reserveGlobalApiCall();
   if (!gate.allowed) {
     throw new Error('GEMINI_GLOBAL_LIMIT');
   }
 
-  const model = complexity === 'simple' ? SIMPLE_MODEL : COMPLEX_MODEL;
+  const modelCandidates = getModelCandidates(complexity);
+  let activeModel = modelCandidates[0];
   const defaultMaxOutputTokens = wantsDetailedAnswer(userMessage)
     ? DETAILED_MAX_OUTPUT_TOKENS
     : complexity === 'simple'
@@ -78,16 +110,35 @@ export async function generateResponse({ userMessage, systemPrompt, ragContext, 
     }
     fullSystemPrompt += FORMATTING_INSTRUCTIONS;
 
-    const response = await ai.models.generateContent({
-      model,
-      contents,
-      config: {
-        systemInstruction: fullSystemPrompt,
-        temperature: 0.7,
-        maxOutputTokens,
-        safetySettings: SAFETY_SETTINGS,
-      },
-    }, { signal: controller.signal });
+    let response;
+    let lastError;
+
+    for (const candidate of modelCandidates) {
+      activeModel = candidate;
+      try {
+        response = await withGeminiRetry(() => ai.models.generateContent({
+          model: candidate,
+          contents,
+          config: {
+            systemInstruction: fullSystemPrompt,
+            temperature: 0.7,
+            maxOutputTokens,
+            safetySettings: SAFETY_SETTINGS,
+          },
+        }, { signal: controller.signal }));
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (error?.status !== 429 || candidate === modelCandidates[modelCandidates.length - 1]) {
+          throw error;
+        }
+      }
+    }
+
+    if (!response && lastError) {
+      throw lastError;
+    }
 
     const rawText = response.text;
     if (!rawText) throw new Error('GEMINI_EMPTY_RESPONSE');
@@ -95,7 +146,7 @@ export async function generateResponse({ userMessage, systemPrompt, ragContext, 
 
     return { text, count: gate.count, warning: gate.warning };
   } catch (error) {
-    console.error(`[GEMINI] model=${model} status=${error.status} code=${error.code} name=${error.name} message=${error.message}`);
+    console.error(`[GEMINI] model=${activeModel} status=${error.status} code=${error.code} name=${error.name} message=${error.message}`);
     if (error.name === 'AbortError') {
       throw new Error('GEMINI_TIMEOUT');
     }
@@ -121,10 +172,10 @@ export async function embedText(text) {
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
-    const response = await ai.models.embedContent({
+    const response = await withGeminiRetry(() => ai.models.embedContent({
       model: 'gemini-embedding-001',
       contents: text,
-    }, { signal: controller.signal });
+    }, { signal: controller.signal }));
 
     return response.embeddings[0].values;
   } catch (error) {

@@ -10,8 +10,32 @@ const EMBED_MODEL = 'gemini-embedding-001';
 const EMBED_DIM = 768;
 const BATCH_SIZE = 10;
 const REQUEST_TIMEOUT = 30_000;
+const RETRYABLE_STATUSES = new Set([429, 500, 503]);
+const MAX_RETRIES = 2;
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withGeminiRetry(task) {
+  let lastError;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      if (!RETRYABLE_STATUSES.has(error?.status) || attempt === MAX_RETRIES) {
+        throw error;
+      }
+      await sleep(800 * (attempt + 1));
+    }
+  }
+
+  throw lastError;
+}
 
 async function embedBatch(texts, taskType) {
   const gate = await reserveGlobalApiCall();
@@ -23,11 +47,11 @@ async function embedBatch(texts, taskType) {
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
-    const response = await ai.models.embedContent({
+    const response = await withGeminiRetry(() => ai.models.embedContent({
       model: EMBED_MODEL,
       contents: texts,
       config: { outputDimensionality: EMBED_DIM, taskType },
-    }, { signal: controller.signal });
+    }, { signal: controller.signal }));
 
     return response.embeddings.map((e) => e.values);
   } catch (error) {

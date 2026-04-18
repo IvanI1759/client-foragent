@@ -10,7 +10,8 @@ const MAX_MESSAGE_LENGTH = 4000;
 const TELEGRAM_MESSAGE_LIMIT = 4000;
 const HISTORY_PAIRS = 10;
 const GUEST_RATE_LIMIT = parseInt(process.env.GUEST_RATE_LIMIT, 10) || 5;
-const activeRequests = new Set();
+const MAX_PENDING_REQUESTS_PER_USER = 2;
+const requestQueues = new Map();
 
 const AGENT_DISPATCH = {
   marketer: askMarketer,
@@ -55,15 +56,32 @@ function auditBestEffort(eventType, options) {
   });
 }
 
-function acquireRequestLock(userId) {
+function enqueueUserRequest(userId, task) {
   const key = String(userId);
-  if (activeRequests.has(key)) return false;
-  activeRequests.add(key);
-  return true;
-}
+  const state = requestQueues.get(key) || {
+    tail: Promise.resolve(),
+    size: 0,
+  };
 
-function releaseRequestLock(userId) {
-  activeRequests.delete(String(userId));
+  if (state.size >= MAX_PENDING_REQUESTS_PER_USER) {
+    return { accepted: false, queueSize: state.size };
+  }
+
+  state.size += 1;
+  const run = state.tail
+    .catch(() => {})
+    .then(task)
+    .finally(() => {
+      state.size -= 1;
+      if (state.size === 0) {
+        requestQueues.delete(key);
+      }
+    });
+
+  state.tail = run;
+  requestQueues.set(key, state);
+
+  return { accepted: true, promise: run };
 }
 
 function startTypingLoop(ctx) {
@@ -119,59 +137,59 @@ async function replaceOrReplyLong(ctx, placeholderId, text, extra) {
 }
 
 async function handleGuestMessage(ctx, text) {
-  if (!acquireRequestLock(ctx.from.id)) {
+  const queued = enqueueUserRequest(ctx.from.id, async () => {
+    let rl;
+    try {
+      rl = await checkAndIncrementUserRateLimit(ctx.from.id, GUEST_RATE_LIMIT);
+    } catch (error) {
+      console.error(`[RATE_LIMIT] user_id=${ctx.from.id} error=${error.message}`);
+      return ctx.reply('Сервис временно недоступен. Попробуйте чуть позже.');
+    }
+    if (!rl.allowed) {
+      auditBestEffort('rate_limit_exceeded', {
+        severity: 'warning',
+        actorUserId: ctx.from.id,
+        meta: { flow: 'guest', limit: GUEST_RATE_LIMIT },
+      });
+      return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
+    }
+
+    const typingTimer = startTypingLoop(ctx);
+    const placeholder = await ctx.reply(PLACEHOLDER_TEXT).catch(() => null);
+    const placeholderId = placeholder?.message_id;
+
+    try {
+      const history = (ctx.session.message_history || []).slice(-HISTORY_PAIRS * 2);
+      const { text: answer, warning, count } = await askConsultant(text, history);
+
+      const full = `${answer}\n\n${accessCta(ctx.from.id)}`;
+      await replaceOrReplyLong(ctx, placeholderId, full);
+
+      ctx.session.message_history = [
+        ...history,
+        { role: 'user', text },
+        { role: 'model', text: answer },
+      ].slice(-HISTORY_PAIRS * 2);
+
+      if (warning) await notifyOwner(ctx, count ?? '~80%');
+    } catch (e) {
+      console.error(`[CONSULTANT] user_id=${ctx.from.id} error=${e.message}`);
+      const msg = ERROR_MESSAGES[e.message] || 'Ошибка при обработке запроса.';
+      await replaceOrReply(ctx, placeholderId, msg);
+    } finally {
+      clearInterval(typingTimer);
+    }
+  });
+
+  if (!queued.accepted) {
     auditBestEffort('concurrent_request_blocked', {
       severity: 'warning',
       actorUserId: ctx.from.id,
-      meta: { flow: 'guest' },
+      meta: { flow: 'guest', queueSize: queued.queueSize },
     });
-    return ctx.reply('Подождите, я ещё обрабатываю ваш прошлый запрос.');
+    return ctx.reply('Слишком много сообщений подряд. Дождитесь ответа и попробуйте ещё раз.');
   }
-
-  let rl;
-  try {
-    rl = await checkAndIncrementUserRateLimit(ctx.from.id, GUEST_RATE_LIMIT);
-  } catch (error) {
-    console.error(`[RATE_LIMIT] user_id=${ctx.from.id} error=${error.message}`);
-    releaseRequestLock(ctx.from.id);
-    return ctx.reply('Сервис временно недоступен. Попробуйте чуть позже.');
-  }
-  if (!rl.allowed) {
-    auditBestEffort('rate_limit_exceeded', {
-      severity: 'warning',
-      actorUserId: ctx.from.id,
-      meta: { flow: 'guest', limit: GUEST_RATE_LIMIT },
-    });
-    releaseRequestLock(ctx.from.id);
-    return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
-  }
-
-  const typingTimer = startTypingLoop(ctx);
-  const placeholder = await ctx.reply(PLACEHOLDER_TEXT).catch(() => null);
-  const placeholderId = placeholder?.message_id;
-
-  try {
-    const history = (ctx.session.message_history || []).slice(-HISTORY_PAIRS * 2);
-    const { text: answer, warning, count } = await askConsultant(text, history);
-
-    const full = `${answer}\n\n${accessCta(ctx.from.id)}`;
-    await replaceOrReplyLong(ctx, placeholderId, full);
-
-    ctx.session.message_history = [
-      ...history,
-      { role: 'user', text },
-      { role: 'model', text: answer },
-    ].slice(-HISTORY_PAIRS * 2);
-
-    if (warning) await notifyOwner(ctx, count ?? '~80%');
-  } catch (e) {
-    console.error(`[CONSULTANT] user_id=${ctx.from.id} error=${e.message}`);
-    const msg = ERROR_MESSAGES[e.message] || 'Ошибка при обработке запроса.';
-    await replaceOrReply(ctx, placeholderId, msg);
-  } finally {
-    clearInterval(typingTimer);
-    releaseRequestLock(ctx.from.id);
-  }
+  return queued.promise;
 }
 
 export function messageHandler(bot) {
@@ -211,62 +229,62 @@ export function messageHandler(bot) {
       return ctx.reply('Сначала выберите агента:', AGENTS_KEYBOARD);
     }
 
-    if (!acquireRequestLock(ctx.from.id)) {
+    const queued = enqueueUserRequest(ctx.from.id, async () => {
+      let rl;
+      try {
+        rl = await checkAndIncrementUserRateLimit(ctx.from.id);
+      } catch (error) {
+        console.error(`[RATE_LIMIT] user_id=${ctx.from.id} error=${error.message}`);
+        return ctx.reply('Сервис временно недоступен. Попробуйте чуть позже.');
+      }
+      if (!rl.allowed) {
+        auditBestEffort('rate_limit_exceeded', {
+          severity: 'warning',
+          actorUserId: ctx.from.id,
+          meta: { flow: 'agent', agentType },
+        });
+        return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
+      }
+
+      const typingTimer = startTypingLoop(ctx);
+      const placeholder = await ctx.reply(PLACEHOLDER_TEXT).catch(() => null);
+      const placeholderId = placeholder?.message_id;
+
+      try {
+        const history = (ctx.session.message_history || []).slice(-HISTORY_PAIRS * 2);
+        const ask = AGENT_DISPATCH[agentType];
+        const { text: answer, warning, count, noContext } = await ask(text, history);
+
+        const prefix = noContext ? 'ℹ️ Ответ без контекста из базы знаний.\n\n' : '';
+        const suffix = DONT_KNOW_RE.test(answer) ? `\n\n${OWNER_FALLBACK}` : '';
+        await replaceOrReplyLong(ctx, placeholderId, prefix + answer + suffix, CONTROL_KEYBOARD);
+
+        ctx.session.message_history = [
+          ...history,
+          { role: 'user', text },
+          { role: 'model', text: answer },
+        ].slice(-HISTORY_PAIRS * 2);
+
+        if (warning) await notifyOwner(ctx, count ?? '~80%');
+      } catch (e) {
+        console.error(`[AGENT] user_id=${ctx.from.id} agent=${agentType} error=${e.message}`);
+        console.error('[AGENT] stack:', e.stack);
+        if (e.cause) console.error('[AGENT] cause:', e.cause);
+        const msg = ERROR_MESSAGES[e.message] || 'Ошибка при обработке запроса.';
+        await replaceOrReply(ctx, placeholderId, msg);
+      } finally {
+        clearInterval(typingTimer);
+      }
+    });
+
+    if (!queued.accepted) {
       auditBestEffort('concurrent_request_blocked', {
         severity: 'warning',
         actorUserId: ctx.from.id,
-        meta: { flow: 'agent', agentType },
+        meta: { flow: 'agent', agentType, queueSize: queued.queueSize },
       });
-      return ctx.reply('Подождите, я ещё обрабатываю ваш прошлый запрос.');
+      return ctx.reply('Слишком много сообщений подряд. Дождитесь ответа и попробуйте ещё раз.');
     }
-
-    let rl;
-    try {
-      rl = await checkAndIncrementUserRateLimit(ctx.from.id);
-    } catch (error) {
-      console.error(`[RATE_LIMIT] user_id=${ctx.from.id} error=${error.message}`);
-      releaseRequestLock(ctx.from.id);
-      return ctx.reply('Сервис временно недоступен. Попробуйте чуть позже.');
-    }
-    if (!rl.allowed) {
-      auditBestEffort('rate_limit_exceeded', {
-        severity: 'warning',
-        actorUserId: ctx.from.id,
-        meta: { flow: 'agent', agentType },
-      });
-      releaseRequestLock(ctx.from.id);
-      return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
-    }
-
-    const typingTimer = startTypingLoop(ctx);
-    const placeholder = await ctx.reply(PLACEHOLDER_TEXT).catch(() => null);
-    const placeholderId = placeholder?.message_id;
-
-    try {
-      const history = (ctx.session.message_history || []).slice(-HISTORY_PAIRS * 2);
-      const ask = AGENT_DISPATCH[agentType];
-      const { text: answer, warning, count, noContext } = await ask(text, history);
-
-      const prefix = noContext ? 'ℹ️ Ответ без контекста из базы знаний.\n\n' : '';
-      const suffix = DONT_KNOW_RE.test(answer) ? `\n\n${OWNER_FALLBACK}` : '';
-      await replaceOrReplyLong(ctx, placeholderId, prefix + answer + suffix, CONTROL_KEYBOARD);
-
-      ctx.session.message_history = [
-        ...history,
-        { role: 'user', text },
-        { role: 'model', text: answer },
-      ].slice(-HISTORY_PAIRS * 2);
-
-      if (warning) await notifyOwner(ctx, count ?? '~80%');
-    } catch (e) {
-      console.error(`[AGENT] user_id=${ctx.from.id} agent=${agentType} error=${e.message}`);
-      console.error('[AGENT] stack:', e.stack);
-      if (e.cause) console.error('[AGENT] cause:', e.cause);
-      const msg = ERROR_MESSAGES[e.message] || 'Ошибка при обработке запроса.';
-      await replaceOrReply(ctx, placeholderId, msg);
-    } finally {
-      clearInterval(typingTimer);
-      releaseRequestLock(ctx.from.id);
-    }
+    return queued.promise;
   });
 }
