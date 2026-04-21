@@ -32,6 +32,7 @@
 - [x] `src/agents/packager.js` — упаковщик ТГ-канала: bio (255), закреп, УТП, рубрики, монетизация. RAG фильтр `agent_type=packager`.
 - [x] `src/bot/handlers/agent.js` — callback `agent:{type}` с валидацией, `/switch`, сброс истории при смене.
 - [x] `src/bot/handlers/message.js` — роутинг текста → агент, `/reset`, `/new`, лимит 4000 символов, история 10 пар user/model, user rate limit (20/час), уведомление owner при 80% глобального лимита.
+- [x] `src/bot/handlers/message.js` — лимит в 5 сообщений у гостевого `consultant` временно снят: `GUEST_RATE_LIMIT` теперь отключает проверку при значении `<= 0`, остальная архитектура (очередь, антиспам, глобальные лимиты Gemini) сохранена.
 - [x] Все промпты содержат anti-injection инструкцию + перенаправление вне своей зоны через /switch.
 - [x] Ошибки 429/500/503/timeout/global-limit → UX-сообщения пользователю, без stack trace.
 

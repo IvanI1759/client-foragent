@@ -9,7 +9,7 @@ import { AGENTS_KEYBOARD, CONTROL_KEYBOARD, AGENT_ICONS, AGENT_NAMES, OWNER_USER
 const MAX_MESSAGE_LENGTH = 4000;
 const TELEGRAM_MESSAGE_LIMIT = 4000;
 const HISTORY_PAIRS = 10;
-const GUEST_RATE_LIMIT = parseInt(process.env.GUEST_RATE_LIMIT, 10) || 5;
+const GUEST_RATE_LIMIT = parseInt(process.env.GUEST_RATE_LIMIT, 10) || 0;
 const MAX_PENDING_REQUESTS_PER_USER = 2;
 const requestQueues = new Map();
 
@@ -138,20 +138,22 @@ async function replaceOrReplyLong(ctx, placeholderId, text, extra) {
 
 async function handleGuestMessage(ctx, text) {
   const queued = enqueueUserRequest(ctx.from.id, async () => {
-    let rl;
-    try {
-      rl = await checkAndIncrementUserRateLimit(ctx.from.id, GUEST_RATE_LIMIT);
-    } catch (error) {
-      console.error(`[RATE_LIMIT] user_id=${ctx.from.id} error=${error.message}`);
-      return ctx.reply('Сервис временно недоступен. Попробуйте чуть позже.');
-    }
-    if (!rl.allowed) {
-      auditBestEffort('rate_limit_exceeded', {
-        severity: 'warning',
-        actorUserId: ctx.from.id,
-        meta: { flow: 'guest', limit: GUEST_RATE_LIMIT },
-      });
-      return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
+    if (GUEST_RATE_LIMIT > 0) {
+      let rl;
+      try {
+        rl = await checkAndIncrementUserRateLimit(ctx.from.id, GUEST_RATE_LIMIT);
+      } catch (error) {
+        console.error(`[RATE_LIMIT] user_id=${ctx.from.id} error=${error.message}`);
+        return ctx.reply('Сервис временно недоступен. Попробуйте чуть позже.');
+      }
+      if (!rl.allowed) {
+        auditBestEffort('rate_limit_exceeded', {
+          severity: 'warning',
+          actorUserId: ctx.from.id,
+          meta: { flow: 'guest', limit: GUEST_RATE_LIMIT },
+        });
+        return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
+      }
     }
 
     const typingTimer = startTypingLoop(ctx);
