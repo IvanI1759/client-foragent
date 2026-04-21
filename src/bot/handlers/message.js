@@ -3,7 +3,7 @@ import { askCopywriter } from '../../agents/copywriter.js';
 import { askAds } from '../../agents/ads.js';
 import { askPackager } from '../../agents/packager.js';
 import { askConsultant } from '../../agents/consultant.js';
-import { checkAndIncrementUserRateLimit, clearSessionHistory, recordAuditEvent } from '../../db/queries.js';
+import { checkAndIncrementUserRateLimit, clearSessionHistory, hasAssistantResponse, recordAuditEvent } from '../../db/queries.js';
 import { AGENTS_KEYBOARD, CONTROL_KEYBOARD, AGENT_ICONS, AGENT_NAMES, OWNER_USERNAME } from './agent.js';
 
 const MAX_MESSAGE_LENGTH = 4000;
@@ -22,6 +22,7 @@ const AGENT_DISPATCH = {
 
 const DONT_KNOW_RE = /не могу помочь|не знаю/i;
 const OWNER_FALLBACK = `По этому вопросу напишите владельцу: ${OWNER_USERNAME}`;
+const GREETING_PREFIX_RE = /^\s*(?:👋\s*)?(?:привет(?:ик)?|здравствуй(?:те)?|добрый день|добрый вечер|добро пожаловать)[!.,\s-]*/i;
 
 const ERROR_MESSAGES = {
   GEMINI_TIMEOUT: 'Ответ занимает слишком много времени. Попробуйте короче сформулировать вопрос.',
@@ -54,6 +55,21 @@ function auditBestEffort(eventType, options) {
   recordAuditEvent(eventType, options).catch((error) => {
     console.error(`[AUDIT] event=${eventType} error=${error.message}`);
   });
+}
+
+async function shouldAllowGreeting(userId) {
+  try {
+    return !(await hasAssistantResponse(userId));
+  } catch (error) {
+    console.error(`[AUDIT] event=assistant_response_sent_lookup error=${error.message}`);
+    return false;
+  }
+}
+
+function stripGreetingPrefix(text, allowGreeting) {
+  if (!text || allowGreeting) return text;
+  const stripped = text.replace(GREETING_PREFIX_RE, '').trimStart();
+  return stripped || text;
 }
 
 function enqueueUserRequest(userId, task) {
@@ -138,6 +154,8 @@ async function replaceOrReplyLong(ctx, placeholderId, text, extra) {
 
 async function handleGuestMessage(ctx, text) {
   const queued = enqueueUserRequest(ctx.from.id, async () => {
+    const allowGreeting = await shouldAllowGreeting(ctx.from.id);
+
     if (GUEST_RATE_LIMIT > 0) {
       let rl;
       try {
@@ -162,7 +180,8 @@ async function handleGuestMessage(ctx, text) {
 
     try {
       const history = (ctx.session.message_history || []).slice(-HISTORY_PAIRS * 2);
-      const { text: answer, warning, count } = await askConsultant(text, history);
+      const { text: rawAnswer, warning, count } = await askConsultant(text, history);
+      const answer = stripGreetingPrefix(rawAnswer, allowGreeting);
 
       const full = `${answer}\n\n${accessCta(ctx.from.id)}`;
       await replaceOrReplyLong(ctx, placeholderId, full);
@@ -172,6 +191,11 @@ async function handleGuestMessage(ctx, text) {
         { role: 'user', text },
         { role: 'model', text: answer },
       ].slice(-HISTORY_PAIRS * 2);
+
+      auditBestEffort('assistant_response_sent', {
+        actorUserId: ctx.from.id,
+        meta: { flow: 'guest', agentType: 'consultant' },
+      });
 
       if (warning) await notifyOwner(ctx, count ?? '~80%');
     } catch (e) {
@@ -232,6 +256,8 @@ export function messageHandler(bot) {
     }
 
     const queued = enqueueUserRequest(ctx.from.id, async () => {
+      const allowGreeting = await shouldAllowGreeting(ctx.from.id);
+
       let rl;
       try {
         rl = await checkAndIncrementUserRateLimit(ctx.from.id);
@@ -255,7 +281,8 @@ export function messageHandler(bot) {
       try {
         const history = (ctx.session.message_history || []).slice(-HISTORY_PAIRS * 2);
         const ask = AGENT_DISPATCH[agentType];
-        const { text: answer, warning, count, noContext } = await ask(text, history);
+        const { text: rawAnswer, warning, count, noContext } = await ask(text, history);
+        const answer = stripGreetingPrefix(rawAnswer, allowGreeting);
 
         const prefix = noContext ? 'ℹ️ Ответ без контекста из базы знаний.\n\n' : '';
         const suffix = DONT_KNOW_RE.test(answer) ? `\n\n${OWNER_FALLBACK}` : '';
@@ -266,6 +293,11 @@ export function messageHandler(bot) {
           { role: 'user', text },
           { role: 'model', text: answer },
         ].slice(-HISTORY_PAIRS * 2);
+
+        auditBestEffort('assistant_response_sent', {
+          actorUserId: ctx.from.id,
+          meta: { flow: 'agent', agentType },
+        });
 
         if (warning) await notifyOwner(ctx, count ?? '~80%');
       } catch (e) {

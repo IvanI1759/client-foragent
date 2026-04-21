@@ -273,6 +273,17 @@ export async function recordAuditEvent(eventType, {
   if (error) throw error;
 }
 
+export async function hasAssistantResponse(userId) {
+  const { data, error } = await supabase
+    .from('audit_logs')
+    .select('id')
+    .eq('event_type', 'assistant_response_sent')
+    .eq('actor_user_id', userId)
+    .limit(1);
+  if (error) throw error;
+  return Array.isArray(data) && data.length > 0;
+}
+
 // ---------- stats ----------
 
 export async function getStats() {
