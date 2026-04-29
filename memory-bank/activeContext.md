@@ -6,6 +6,7 @@ Scope команд настраивается через `bot.telegram.setMyComm
 
 ## Recent Changes
 
+- `src/gemini/client.js`: timeout для Gemini generate/embed увеличен с 30 до 60 секунд. Для generateContent добавлен один повтор, если `finishReason` ответа не `STOP`; в логах теперь видно `finishReason` и `completion_attempt`.
 - `src/bot/handlers/message.js`: история диалога ограничена последними 10 парами user/model (20 объектов максимум) из `sessions.message_history`. Одинаково применяется для гостевого consultant и авторизованных агентов через helper `getRecentHistory()` / `appendToHistory()`.
 - `src/rag/retrieve.js`: RAG retrieval теперь сначала собирает top-2 из текущего `agent_type` + `all`, а если найдено меньше 2 чанков - добирает из `consultant`. Итоговый контекст всё равно ограничен 2 чанками, embedding запроса генерируется один раз, добавлены безопасные `[RAG]` логи без содержимого сообщений и документов.
 - `src/rag/embed.js`: добавлен параметр `taskType` в `embedBatch`. `embedChunks` использует `RETRIEVAL_DOCUMENT` (для индексации), `embedQuery` - `RETRIEVAL_QUERY` (для поиска). Семантика подсказывает модели роль текста и улучшает качество матчинга.

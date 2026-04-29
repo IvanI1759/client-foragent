@@ -9,12 +9,13 @@ if (!GEMINI_API_KEY) {
 
 const COMPLEX_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
 const SIMPLE_MODEL = process.env.GEMINI_SIMPLE_MODEL || 'gemini-2.5-flash-lite';
-const REQUEST_TIMEOUT = 30_000;
+const REQUEST_TIMEOUT = 60_000;
 const SIMPLE_MAX_OUTPUT_TOKENS = 700;
 const COMPLEX_MAX_OUTPUT_TOKENS = 1200;
 const DETAILED_MAX_OUTPUT_TOKENS = 1700;
 const RETRYABLE_STATUSES = new Set([429, 500, 503]);
 const MAX_RETRIES = 2;
+const MAX_INCOMPLETE_RESPONSE_RETRIES = 1;
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -79,6 +80,55 @@ function getModelCandidates(complexity) {
   return Array.from(new Set([primary, fallback].filter(Boolean)));
 }
 
+function getFinishReason(response) {
+  return (
+    response?.candidates?.[0]?.finishReason ||
+    response?.candidates?.[0]?.finish_reason ||
+    response?.finishReason ||
+    response?.finish_reason ||
+    null
+  );
+}
+
+function isIncompleteResponse(response) {
+  const finishReason = getFinishReason(response);
+  return finishReason && finishReason !== 'STOP';
+}
+
+async function generateContentWithCompletionRetry({
+  model,
+  contents,
+  systemInstruction,
+  maxOutputTokens,
+  signal,
+}) {
+  let response;
+
+  for (let attempt = 0; attempt <= MAX_INCOMPLETE_RESPONSE_RETRIES; attempt++) {
+    response = await withGeminiRetry(() => ai.models.generateContent({
+      model,
+      contents,
+      config: {
+        systemInstruction,
+        temperature: 0.7,
+        maxOutputTokens,
+        safetySettings: SAFETY_SETTINGS,
+      },
+    }, { signal }));
+
+    const finishReason = getFinishReason(response);
+    console.log(`[GEMINI] model=${model} finishReason=${finishReason || 'UNKNOWN'} completion_attempt=${attempt + 1}`);
+
+    if (!isIncompleteResponse(response) || attempt === MAX_INCOMPLETE_RESPONSE_RETRIES) {
+      return response;
+    }
+
+    console.log(`[GEMINI] model=${model} incomplete_response finishReason=${finishReason} retry=1`);
+  }
+
+  return response;
+}
+
 export async function generateResponse({ userMessage, systemPrompt, ragContext, messageHistory = [], complexity = 'complex', maxOutputTokens: maxOutputTokensOverride }) {
   const gate = await reserveGlobalApiCall();
   if (!gate.allowed) {
@@ -116,16 +166,13 @@ export async function generateResponse({ userMessage, systemPrompt, ragContext, 
     for (const candidate of modelCandidates) {
       activeModel = candidate;
       try {
-        response = await withGeminiRetry(() => ai.models.generateContent({
+        response = await generateContentWithCompletionRetry({
           model: candidate,
           contents,
-          config: {
-            systemInstruction: fullSystemPrompt,
-            temperature: 0.7,
-            maxOutputTokens,
-            safetySettings: SAFETY_SETTINGS,
-          },
-        }, { signal: controller.signal }));
+          systemInstruction: fullSystemPrompt,
+          maxOutputTokens,
+          signal: controller.signal,
+        });
         lastError = null;
         break;
       } catch (error) {
