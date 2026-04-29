@@ -1,13 +1,18 @@
 import { Markup } from 'telegraf';
 import { clearSessionHistory } from '../../db/queries.js';
+import { isAdmin } from '../admins.js';
 
 const VALID_AGENTS = ['marketer', 'copywriter', 'ads', 'packager'];
+const OWNER_AGENT = 'strategist';
+const OWNER_AGENTS = [OWNER_AGENT];
+const ALL_AGENTS = [...VALID_AGENTS, ...OWNER_AGENTS];
 
 const AGENT_NAMES = {
   marketer: 'Маркетолог',
   copywriter: 'Копирайтер',
   ads: 'Директолог (РСЯ)',
   packager: 'Упаковщик',
+  strategist: 'Стратег',
 };
 
 const AGENT_ICONS = {
@@ -15,6 +20,7 @@ const AGENT_ICONS = {
   copywriter: '✍️',
   ads: '📣',
   packager: '📦',
+  strategist: '🧠',
 };
 
 const OWNER_USERNAME = '@Skyter2026';
@@ -30,6 +36,26 @@ const AGENTS_KEYBOARD = Markup.inlineKeyboard([
   ],
   [Markup.button.callback('❓ Помощь', 'action:help')],
 ]);
+
+function getAgentsKeyboard(ctx) {
+  const rows = [
+    [
+      Markup.button.callback('📊 Маркетолог', 'agent:marketer'),
+      Markup.button.callback('✍️ Копирайтер', 'agent:copywriter'),
+    ],
+    [
+      Markup.button.callback('📣 Директолог (РСЯ)', 'agent:ads'),
+      Markup.button.callback('📦 Упаковщик', 'agent:packager'),
+    ],
+  ];
+
+  if (isAdmin(ctx)) {
+    rows.push([Markup.button.callback('🧠 Стратег', 'agent:strategist')]);
+  }
+
+  rows.push([Markup.button.callback('❓ Помощь', 'action:help')]);
+  return Markup.inlineKeyboard(rows);
+}
 
 const CONTROL_KEYBOARD = Markup.inlineKeyboard([
   [
@@ -53,6 +79,12 @@ const HELP_TEXT =
   '📣 Директолог (РСЯ) - объявления, таргетинг в РСЯ/Яндекс.Директ\n' +
   '📦 Упаковщик - оформление Telegram-канала, УТП';
 
+function getHelpText(ctx) {
+  if (!isAdmin(ctx)) return HELP_TEXT;
+  return HELP_TEXT + '\n' +
+    '🧠 Стратег - личный советник владельца: анализ проекта, слабые места, идеи роста';
+}
+
 function guestBlocked(ctx) {
   if (!ctx.isGuest) return false;
   const id = ctx.from?.id;
@@ -70,8 +102,11 @@ export function agentHandler(bot) {
   bot.action(/^agent:(.+)$/, async (ctx) => {
     if (guestBlocked(ctx)) return;
     const choice = ctx.match[1];
-    if (!VALID_AGENTS.includes(choice)) {
+    if (!ALL_AGENTS.includes(choice)) {
       return ctx.answerCbQuery('Неизвестный агент');
+    }
+    if (OWNER_AGENTS.includes(choice) && !isAdmin(ctx)) {
+      return ctx.answerCbQuery('Этот агент доступен только владельцу');
     }
 
     ctx.session.selected_agent = choice;
@@ -89,7 +124,7 @@ export function agentHandler(bot) {
   bot.action('action:switch', async (ctx) => {
     if (guestBlocked(ctx)) return;
     await ctx.answerCbQuery();
-    await ctx.reply('Выберите агента:', AGENTS_KEYBOARD);
+    await ctx.reply('Выберите агента:', getAgentsKeyboard(ctx));
   });
 
   // Сброс истории
@@ -123,17 +158,19 @@ export function agentHandler(bot) {
       );
       return;
     }
-    await ctx.reply(HELP_TEXT, AGENTS_KEYBOARD);
+    await ctx.reply(getHelpText(ctx), getAgentsKeyboard(ctx));
   });
 
 }
 
 export {
   AGENTS_KEYBOARD,
+  getAgentsKeyboard,
   CONTROL_KEYBOARD,
   AGENT_NAMES,
   AGENT_ICONS,
   VALID_AGENTS,
   HELP_TEXT,
+  getHelpText,
   OWNER_USERNAME,
 };

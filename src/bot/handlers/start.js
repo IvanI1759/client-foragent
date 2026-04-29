@@ -1,4 +1,4 @@
-import { AGENTS_KEYBOARD, HELP_TEXT, OWNER_USERNAME } from './agent.js';
+import { getAgentsKeyboard, getHelpText, OWNER_USERNAME } from './agent.js';
 
 export function startHandler(bot) {
   bot.start(async (ctx) => {
@@ -18,13 +18,15 @@ export function startHandler(bot) {
 
     await ctx.reply(
       '👋 Добро пожаловать!\n\n' +
-      '🤖 Я - AI-ассистент с 4 специализированными агентами:\n\n' +
+      '🤖 Я - AI-ассистент со специализированными агентами:\n\n' +
       '📊 Маркетолог - стратегия, ЦА, воронки\n' +
       '✍️ Копирайтер - тексты, посты, рассылки\n' +
       '📣 Директолог (РСЯ) - объявления, таргетинг в РСЯ/Яндекс.Директ\n' +
-      '📦 Упаковщик - офферы, УТП, Telegram-канал\n\n' +
+      '📦 Упаковщик - офферы, УТП, Telegram-канал\n' +
+      (ctx.isAdmin ? '🧠 Стратег - личный советник владельца\n' : '') +
+      '\n' +
       '👇 Выберите агента:',
-      AGENTS_KEYBOARD
+      getAgentsKeyboard(ctx)
     );
   });
 
@@ -37,6 +39,6 @@ export function startHandler(bot) {
       );
       return;
     }
-    await ctx.reply(HELP_TEXT, AGENTS_KEYBOARD);
+    await ctx.reply(getHelpText(ctx), getAgentsKeyboard(ctx));
   });
 }

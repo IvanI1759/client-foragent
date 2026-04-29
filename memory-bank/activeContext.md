@@ -6,6 +6,7 @@ Scope команд настраивается через `bot.telegram.setMyComm
 
 ## Recent Changes
 
+- Добавлен owner-only агент `strategist` (`src/agents/strategist.js`) — личный стратег и советник владельца проекта. Доступен только владельцу/админам через кнопку «🧠 Стратег», партнёры кнопку не видят и не могут выбрать агента вручную через callback/session.
 - `src/gemini/client.js`: увеличены лимиты генерации `maxOutputTokens`: simple 700→1200, complex 1200→2200, detailed 1700→3200. Причина обрывов на середине была не в Telegram split, а в том, что Gemini мог завершать ответ по лимиту токенов (`MAX_TOKENS` / finishReason не STOP).
 - `src/agents/{marketer,copywriter,ads,packager,consultant}.js`: секция `КТО ТЫ - ОТВЕЧАЙ ИМЕННО ТАК` расширена. На вопросы "кто ты", "что умеешь", "чем можешь помочь", "представься" агенты должны отвечать 4-5 абзацами с ролью, моделью, задачей и конкретным списком помощи.
 - `src/gemini/client.js`: timeout для Gemini generate/embed увеличен с 30 до 60 секунд. Для generateContent добавлен один повтор, если `finishReason` ответа не `STOP`; в логах теперь видно `finishReason` и `completion_attempt`.

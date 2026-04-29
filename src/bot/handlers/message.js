@@ -3,8 +3,9 @@ import { askCopywriter } from '../../agents/copywriter.js';
 import { askAds } from '../../agents/ads.js';
 import { askPackager } from '../../agents/packager.js';
 import { askConsultant } from '../../agents/consultant.js';
+import { askStrategist } from '../../agents/strategist.js';
 import { checkAndIncrementUserRateLimit, clearSessionHistory, hasAssistantResponse, recordAuditEvent } from '../../db/queries.js';
-import { AGENTS_KEYBOARD, CONTROL_KEYBOARD, AGENT_ICONS, AGENT_NAMES, OWNER_USERNAME } from './agent.js';
+import { CONTROL_KEYBOARD, AGENT_ICONS, AGENT_NAMES, OWNER_USERNAME, getAgentsKeyboard } from './agent.js';
 
 const MAX_MESSAGE_LENGTH = 4000;
 const TELEGRAM_MESSAGE_LIMIT = 4000;
@@ -19,6 +20,7 @@ const AGENT_DISPATCH = {
   copywriter: askCopywriter,
   ads: askAds,
   packager: askPackager,
+  strategist: askStrategist,
 };
 
 const DONT_KNOW_RE = /не могу помочь|не знаю/i;
@@ -230,7 +232,7 @@ async function handleGuestMessage(ctx, text) {
 export function messageHandler(bot) {
   bot.command('reset', async (ctx) => {
     if (ctx.isGuest) return;
-    await ctx.reply('Выберите агента:', AGENTS_KEYBOARD);
+    await ctx.reply('Выберите агента:', getAgentsKeyboard(ctx));
   });
 
   bot.command('new', async (ctx) => {
@@ -261,7 +263,13 @@ export function messageHandler(bot) {
 
     const agentType = ctx.session?.selected_agent;
     if (!agentType || !AGENT_DISPATCH[agentType]) {
-      return ctx.reply('Сначала выберите агента:', AGENTS_KEYBOARD);
+      return ctx.reply('Сначала выберите агента:', getAgentsKeyboard(ctx));
+    }
+    if (agentType === 'strategist' && !ctx.isAdmin) {
+      ctx.session.selected_agent = null;
+      ctx.session.message_history = [];
+      await clearSessionHistory(ctx.from.id).catch(() => {});
+      return ctx.reply('Этот агент доступен только владельцу проекта.', getAgentsKeyboard(ctx));
     }
 
     const queued = enqueueUserRequest(ctx.from.id, async () => {

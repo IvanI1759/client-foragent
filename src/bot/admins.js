@@ -4,7 +4,11 @@ export function getAdminIds() {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  return [...new Set([owner, ...admins].filter(Boolean))];
+  const legacyAdmins = (process.env.ADMIN_CHAT_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set([owner, ...admins, ...legacyAdmins].filter(Boolean))];
 }
 
 export function isAdmin(ctx) {
