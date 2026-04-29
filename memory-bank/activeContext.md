@@ -6,6 +6,7 @@ Scope команд настраивается через `bot.telegram.setMyComm
 
 ## Recent Changes
 
+- `src/bot/handlers/message.js`: история диалога теперь ограничена последними 10 записями из `sessions.message_history` суммарно, а не 10 парами user/model. Одинаково применяется для гостевого consultant и авторизованных агентов через helper `getRecentHistory()` / `appendToHistory()`.
 - `src/rag/retrieve.js`: RAG retrieval теперь сначала собирает top-2 из текущего `agent_type` + `all`, а если найдено меньше 2 чанков - добирает из `consultant`. Итоговый контекст всё равно ограничен 2 чанками, embedding запроса генерируется один раз, добавлены безопасные `[RAG]` логи без содержимого сообщений и документов.
 - `src/rag/embed.js`: добавлен параметр `taskType` в `embedBatch`. `embedChunks` использует `RETRIEVAL_DOCUMENT` (для индексации), `embedQuery` - `RETRIEVAL_QUERY` (для поиска). Семантика подсказывает модели роль текста и улучшает качество матчинга.
 - `src/rag/retrieve.js`: `MIN_SCORE` снижен с 0.7 до 0.55. На реальных данных при 0.7 retrieve часто возвращал 0 чанков и агент уходил в `noContext: true`.
@@ -67,7 +68,7 @@ Scope команд настраивается через `bot.telegram.setMyComm
 ## Active Decisions
 
 - Каждый агент делает RAG retrieval самостоятельно (фильтр по agent_type) и вызывает generateResponse из client.js.
-- История диалога: 10 пар (user + model) хранятся в таблице sessions как JSONB.
+- История диалога: последние 10 записей хранятся в таблице sessions как JSONB.
 - User rate limit: 20 запросов/час, данные в таблице rate_limits (общий лимит и для гостей).
 - Re-upload: embed+insert под tmp-именем → delete старых → rename, с rollback при ошибке.
 - Неавторизованные не блокируются: auth middleware выставляет `ctx.isGuest=true`, `message.js` роутит их на consultant без RAG.

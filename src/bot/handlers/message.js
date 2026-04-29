@@ -8,7 +8,7 @@ import { AGENTS_KEYBOARD, CONTROL_KEYBOARD, AGENT_ICONS, AGENT_NAMES, OWNER_USER
 
 const MAX_MESSAGE_LENGTH = 4000;
 const TELEGRAM_MESSAGE_LIMIT = 4000;
-const HISTORY_PAIRS = 10;
+const HISTORY_MESSAGES = 10;
 const GUEST_RATE_LIMIT = parseInt(process.env.GUEST_RATE_LIMIT, 10) || 0;
 const MAX_PENDING_REQUESTS_PER_USER = 2;
 const requestQueues = new Map();
@@ -70,6 +70,18 @@ function stripGreetingPrefix(text, allowGreeting) {
   if (!text || allowGreeting) return text;
   const stripped = text.replace(GREETING_PREFIX_RE, '').trimStart();
   return stripped || text;
+}
+
+function getRecentHistory(session) {
+  return (session?.message_history || []).slice(-HISTORY_MESSAGES);
+}
+
+function appendToHistory(history, userText, modelText) {
+  return [
+    ...history,
+    { role: 'user', text: userText },
+    { role: 'model', text: modelText },
+  ].slice(-HISTORY_MESSAGES);
 }
 
 function enqueueUserRequest(userId, task) {
@@ -179,18 +191,14 @@ async function handleGuestMessage(ctx, text) {
     const placeholderId = placeholder?.message_id;
 
     try {
-      const history = (ctx.session.message_history || []).slice(-HISTORY_PAIRS * 2);
+      const history = getRecentHistory(ctx.session);
       const { text: rawAnswer, warning, count } = await askConsultant(text, history);
       const answer = stripGreetingPrefix(rawAnswer, allowGreeting);
 
       const full = `${answer}\n\n${accessCta(ctx.from.id)}`;
       await replaceOrReplyLong(ctx, placeholderId, full);
 
-      ctx.session.message_history = [
-        ...history,
-        { role: 'user', text },
-        { role: 'model', text: answer },
-      ].slice(-HISTORY_PAIRS * 2);
+      ctx.session.message_history = appendToHistory(history, text, answer);
 
       auditBestEffort('assistant_response_sent', {
         actorUserId: ctx.from.id,
@@ -279,7 +287,7 @@ export function messageHandler(bot) {
       const placeholderId = placeholder?.message_id;
 
       try {
-        const history = (ctx.session.message_history || []).slice(-HISTORY_PAIRS * 2);
+        const history = getRecentHistory(ctx.session);
         const ask = AGENT_DISPATCH[agentType];
         const { text: rawAnswer, warning, count, noContext } = await ask(text, history);
         const answer = stripGreetingPrefix(rawAnswer, allowGreeting);
@@ -288,11 +296,7 @@ export function messageHandler(bot) {
         const suffix = DONT_KNOW_RE.test(answer) ? `\n\n${OWNER_FALLBACK}` : '';
         await replaceOrReplyLong(ctx, placeholderId, prefix + answer + suffix, CONTROL_KEYBOARD);
 
-        ctx.session.message_history = [
-          ...history,
-          { role: 'user', text },
-          { role: 'model', text: answer },
-        ].slice(-HISTORY_PAIRS * 2);
+        ctx.session.message_history = appendToHistory(history, text, answer);
 
         auditBestEffort('assistant_response_sent', {
           actorUserId: ctx.from.id,
