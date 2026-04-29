@@ -6,6 +6,8 @@ Scope команд настраивается через `bot.telegram.setMyComm
 
 ## Recent Changes
 
+- `src/gemini/client.js`: увеличены лимиты генерации `maxOutputTokens`: simple 700→1200, complex 1200→2200, detailed 1700→3200. Причина обрывов на середине была не в Telegram split, а в том, что Gemini мог завершать ответ по лимиту токенов (`MAX_TOKENS` / finishReason не STOP).
+- `src/agents/{marketer,copywriter,ads,packager,consultant}.js`: секция `КТО ТЫ - ОТВЕЧАЙ ИМЕННО ТАК` расширена. На вопросы "кто ты", "что умеешь", "чем можешь помочь", "представься" агенты должны отвечать 4-5 абзацами с ролью, моделью, задачей и конкретным списком помощи.
 - `src/gemini/client.js`: timeout для Gemini generate/embed увеличен с 30 до 60 секунд. Для generateContent добавлен один повтор, если `finishReason` ответа не `STOP`; в логах теперь видно `finishReason` и `completion_attempt`.
 - `src/bot/handlers/message.js`: история диалога ограничена последними 10 парами user/model (20 объектов максимум) из `sessions.message_history`. Одинаково применяется для гостевого consultant и авторизованных агентов через helper `getRecentHistory()` / `appendToHistory()`.
 - `src/rag/retrieve.js`: RAG retrieval теперь сначала собирает top-2 из текущего `agent_type` + `all`, а если найдено меньше 2 чанков - добирает из `consultant`. Итоговый контекст всё равно ограничен 2 чанками, embedding запроса генерируется один раз, добавлены безопасные `[RAG]` логи без содержимого сообщений и документов.
