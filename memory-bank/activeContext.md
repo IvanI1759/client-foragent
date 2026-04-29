@@ -6,6 +6,7 @@ Scope команд настраивается через `bot.telegram.setMyComm
 
 ## Recent Changes
 
+- `src/rag/retrieve.js`: RAG retrieval теперь сначала собирает top-2 из текущего `agent_type` + `all`, а если найдено меньше 2 чанков - добирает из `consultant`. Итоговый контекст всё равно ограничен 2 чанками, embedding запроса генерируется один раз, добавлены безопасные `[RAG]` логи без содержимого сообщений и документов.
 - `src/rag/embed.js`: добавлен параметр `taskType` в `embedBatch`. `embedChunks` использует `RETRIEVAL_DOCUMENT` (для индексации), `embedQuery` - `RETRIEVAL_QUERY` (для поиска). Семантика подсказывает модели роль текста и улучшает качество матчинга.
 - `src/rag/retrieve.js`: `MIN_SCORE` снижен с 0.7 до 0.55. На реальных данных при 0.7 retrieve часто возвращал 0 чанков и агент уходил в `noContext: true`.
 - `src/bot/admins.js` (новый файл): вынесены `getAdminIds()` и `isAdmin(ctx)`. Раньше дублировались в `index.js` и `admin.js`. Имя env-переменной - `ADMIN_IDS` (не `ADMIN_CHAT_IDS`, как в более ранних заметках).
