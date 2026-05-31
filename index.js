@@ -24,7 +24,7 @@ app.get('/health', (_req, res) => res.sendStatus(200));
 
 // Webhook with secret token validation (prod only)
 if (useWebhook) {
-  app.use(bot.webhookCallback('/webhook', { secretToken: WEBHOOK_SECRET }));
+  app.use(bot.webhookCallback('/webhook'));
 }
 
 // Middleware: only private chats
