@@ -16,15 +16,32 @@ if (!BOT_TOKEN) throw new Error('Missing BOT_TOKEN');
 const useWebhook = Boolean(WEBHOOK_URL);
 if (useWebhook && !WEBHOOK_SECRET) throw new Error('Missing WEBHOOK_SECRET');
 
+const webhookBase = useWebhook ? WEBHOOK_URL.replace(/\/+$/, '') : '';
+
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
+
+function formatError(error) {
+  if (error instanceof Error) return error.message;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+bot.catch((err, ctx) => {
+  const updateType = ctx?.updateType ?? 'unknown';
+  const userId = ctx?.from?.id ?? 'unknown';
+  console.error(`[BOT] update=${updateType} user_id=${userId} error=${formatError(err)}`);
+});
 
 // Health check
 app.get('/health', (_req, res) => res.sendStatus(200));
 
 // Webhook with secret token validation (prod only)
 if (useWebhook) {
-  app.use(bot.webhookCallback('/webhook'));
+  app.use(bot.webhookCallback('/webhook', { secretToken: WEBHOOK_SECRET }));
 }
 
 // Middleware: only private chats
@@ -90,16 +107,31 @@ const server = app.listen(Number(PORT), async () => {
     console.error(`[BOOT] setMyCommands error: ${e.message}`);
   }
 
-  if (useWebhook) {
-    await bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`, {
-      secret_token: WEBHOOK_SECRET,
-    });
-    console.log(`[BOOT] Bot running on port ${PORT}, webhook set`);
-  } else {
-    await bot.telegram.deleteWebhook();
-    bot.launch();
-    console.log(`[BOOT] Bot running on port ${PORT}, long polling`);
+  try {
+    if (useWebhook) {
+      const targetWebhook = `${webhookBase}/webhook`;
+      console.log(`[BOOT] Setting webhook to ${targetWebhook}`);
+      await bot.telegram.setWebhook(targetWebhook, {
+        secret_token: WEBHOOK_SECRET,
+      });
+      const info = await bot.telegram.getWebhookInfo();
+      console.log(
+        `[BOOT] Telegram webhook=${info.url || '(empty)'} pending=${info.pending_update_count ?? 0}` +
+        (info.last_error_message ? ` last_error="${info.last_error_message}"` : '')
+      );
+      console.log(`[BOOT] Bot running on port ${PORT}, webhook set`);
+    } else {
+      await bot.telegram.deleteWebhook();
+      bot.launch();
+      console.log(`[BOOT] Bot running on port ${PORT}, long polling`);
+    }
+  } catch (e) {
+    console.error(`[BOOT] launch error: ${formatError(e)}`);
   }
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error(`[FATAL] Unhandled rejection: ${formatError(reason)}`);
 });
 
 // Graceful shutdown

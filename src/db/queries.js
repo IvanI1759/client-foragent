@@ -51,13 +51,20 @@ export async function listActiveUsers() {
 
 // ---------- sessions ----------
 
+function toDbError(error, context) {
+  const err = new Error(error?.message || `Database error: ${context}`);
+  err.cause = error;
+  if (error?.code) err.code = error.code;
+  return err;
+}
+
 export async function getSession(userId) {
   const { data, error } = await supabase
     .from('sessions')
     .select('user_id, selected_agent, message_history')
     .eq('user_id', userId)
     .maybeSingle();
-  if (error) throw error;
+  if (error) throw toDbError(error, 'getSession');
   return data || { user_id: userId, selected_agent: null, message_history: [] };
 }
 

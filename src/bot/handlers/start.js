@@ -4,6 +4,7 @@ export function startHandler(bot) {
   bot.start(async (ctx) => {
     console.log(`[START] user_id=${ctx.from.id} guest=${Boolean(ctx.isGuest)}`);
 
+    try {
     if (ctx.isGuest) {
       await ctx.reply(
         '👋 Привет!\n\n' +
@@ -28,6 +29,10 @@ export function startHandler(bot) {
       '👇 Выберите агента:',
       getAgentsKeyboard(ctx)
     );
+    } catch (e) {
+      console.error(`[START] user_id=${ctx.from.id} error=${e?.message ?? e}`);
+      await ctx.reply('Сервис временно недоступен. Попробуйте чуть позже.').catch(() => {});
+    }
   });
 
   bot.help(async (ctx) => {
