@@ -37,8 +37,22 @@ bot.catch((err, ctx) => {
   console.error(`[BOT] update=${updateType} user_id=${userId} error=${formatError(err)}`);
 });
 
-// Health check
-app.get('/health', (_req, res) => res.sendStatus(200));
+const KEEPALIVE_MS = 6 * 60 * 60 * 1000;
+
+async function pingSupabase(label) {
+  try {
+    await checkSupabaseConnection();
+    console.log(`[KEEPALIVE] Supabase OK (${label})`);
+  } catch (e) {
+    console.error(`[KEEPALIVE] Supabase failed (${label}): ${formatError(e)}`);
+  }
+}
+
+// Health check (UptimeRobot pings this → keeps Render + Supabase active)
+app.get('/health', (_req, res) => {
+  res.sendStatus(200);
+  pingSupabase('health').catch(() => {});
+});
 
 // Webhook with secret token validation (prod only)
 if (useWebhook) {
@@ -108,7 +122,10 @@ const server = app.listen(Number(PORT), async () => {
   } catch (e) {
     console.error(`[BOOT] Supabase connection FAILED: ${formatError(e)}`);
     console.warn('[BOOT] Sessions will use in-memory fallback until Supabase is reachable');
+    setTimeout(() => pingSupabase('boot-retry'), 15_000);
   }
+
+  setInterval(() => pingSupabase('interval'), KEEPALIVE_MS);
 
   try {
     await registerCommandScopes();
