@@ -8,6 +8,7 @@ import { adminHandler } from './src/bot/handlers/admin.js';
 import { agentHandler } from './src/bot/handlers/agent.js';
 import { messageHandler } from './src/bot/handlers/message.js';
 import { getAdminIds } from './src/bot/admins.js';
+import { checkSupabaseConnection } from './src/db/queries.js';
 
 const { BOT_TOKEN, WEBHOOK_URL, WEBHOOK_SECRET, PORT = '3000' } = process.env;
 
@@ -100,6 +101,14 @@ const server = app.listen(Number(PORT), async () => {
   const admins = adminIds.filter((id) => id !== owner);
   console.log(`[BOOT] OWNER_CHAT_ID=${owner}`);
   console.log(`[BOOT] ADMIN_IDS=${admins.length ? admins.join(',') : '(empty)'}`);
+
+  try {
+    await checkSupabaseConnection();
+    console.log('[BOOT] Supabase connection OK');
+  } catch (e) {
+    console.error(`[BOOT] Supabase connection FAILED: ${formatError(e)}`);
+    console.warn('[BOOT] Sessions will use in-memory fallback until Supabase is reachable');
+  }
 
   try {
     await registerCommandScopes();

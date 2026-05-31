@@ -80,7 +80,12 @@ export async function saveSession(userId, { selected_agent, message_history }) {
       },
       { onConflict: 'user_id' }
     );
-  if (error) throw error;
+  if (error) throw toDbError(error, 'saveSession');
+}
+
+export async function checkSupabaseConnection() {
+  const { error } = await supabase.from('sessions').select('user_id').limit(1);
+  if (error) throw toDbError(error, 'checkSupabaseConnection');
 }
 
 export async function clearSessionHistory(userId) {

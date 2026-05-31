@@ -1,4 +1,15 @@
 import { getSession, saveSession } from '../../db/queries.js';
+import {
+  emptySession,
+  getCachedSession,
+  setCachedSession,
+} from '../../db/sessionCache.js';
+
+function formatErrorDetail(error) {
+  const base = error?.message ?? JSON.stringify(error);
+  const cause = error?.cause?.message ?? error?.cause;
+  return cause ? `${base} cause=${cause}` : base;
+}
 
 export default async function sessionMiddleware(ctx, next) {
   if (!ctx.from) return next();
@@ -7,10 +18,13 @@ export default async function sessionMiddleware(ctx, next) {
   let session;
   try {
     session = await getSession(userId);
+    setCachedSession(userId, session);
   } catch (e) {
-    const detail = e?.message ?? JSON.stringify(e);
-    console.error(`[SESSION] user_id=${userId} load_error=${detail}`);
-    session = { user_id: userId, selected_agent: null, message_history: [] };
+    console.error(`[SESSION] user_id=${userId} load_error=${formatErrorDetail(e)}`);
+    session = getCachedSession(userId) ?? emptySession();
+    if (getCachedSession(userId)) {
+      console.warn(`[SESSION] user_id=${userId} using in-memory fallback`);
+    }
   }
 
   ctx.session = {
@@ -21,13 +35,15 @@ export default async function sessionMiddleware(ctx, next) {
 
   await next();
 
+  setCachedSession(userId, ctx.session);
+
   const after = JSON.stringify(ctx.session);
   if (before === after) return;
 
   try {
     await saveSession(userId, ctx.session);
   } catch (e) {
-    const detail = e?.message ?? JSON.stringify(e);
-    console.error(`[SESSION] user_id=${userId} save_error=${detail}`);
+    console.error(`[SESSION] user_id=${userId} save_error=${formatErrorDetail(e)}`);
+    console.warn(`[SESSION] user_id=${userId} kept in-memory session only`);
   }
 }
