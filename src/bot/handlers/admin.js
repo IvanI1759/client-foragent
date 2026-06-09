@@ -69,7 +69,7 @@ function parseUserId(text) {
   return match ? Number(match[1]) : null;
 }
 
-async function downloadFile(ctx, fileId) {
+export async function downloadFile(ctx, fileId) {
   const MAX_ATTEMPTS = 3;
   let lastErr;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {

@@ -6,6 +6,8 @@ import { askConsultant } from '../../agents/consultant.js';
 import { askStrategist } from '../../agents/strategist.js';
 import { checkAndIncrementUserRateLimit, clearSessionHistory, hasAssistantResponse, recordAuditEvent } from '../../db/queries.js';
 import { CONTROL_KEYBOARD, AGENT_ICONS, AGENT_NAMES, OWNER_USERNAME, getAgentsKeyboard } from './agent.js';
+import { downloadFile } from './admin.js';
+import { validateFile, parseDocument } from '../../rag/ingest.js';
 
 const MAX_MESSAGE_LENGTH = 4000;
 const TELEGRAM_MESSAGE_LIMIT = 4000;
@@ -329,6 +331,101 @@ export function messageHandler(bot) {
         severity: 'warning',
         actorUserId: ctx.from.id,
         meta: { flow: 'agent', agentType, queueSize: queued.queueSize },
+      });
+      return ctx.reply('Слишком много сообщений подряд. Дождитесь ответа и попробуйте ещё раз.');
+    }
+    return queued.promise;
+  });
+
+  bot.on('document', async (ctx) => {
+    if (ctx.isGuest) return;
+
+    const agentType = ctx.session?.selected_agent;
+    if (!agentType || !AGENT_DISPATCH[agentType]) {
+      return ctx.reply('Сначала выберите агента:', getAgentsKeyboard(ctx));
+    }
+    if (agentType === 'strategist' && !ctx.isAdmin) {
+      ctx.session.selected_agent = null;
+      ctx.session.message_history = [];
+      await clearSessionHistory(ctx.from.id).catch(() => {});
+      return ctx.reply('Этот агент доступен только владельцу проекта.', getAgentsKeyboard(ctx));
+    }
+
+    const queued = enqueueUserRequest(ctx.from.id, async () => {
+      let rl;
+      try {
+        rl = await checkAndIncrementUserRateLimit(ctx.from.id);
+      } catch (error) {
+        console.error(`[RATE_LIMIT] user_id=${ctx.from.id} error=${error.message}`);
+        return ctx.reply('Сервис временно недоступен. Попробуйте чуть позже.');
+      }
+      if (!rl.allowed) {
+        auditBestEffort('rate_limit_exceeded', {
+          severity: 'warning',
+          actorUserId: ctx.from.id,
+          meta: { flow: 'agent_doc', agentType },
+        });
+        return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
+      }
+
+      const doc = ctx.message.document;
+      const caption = ctx.message.caption || '';
+
+      const typingTimer = startTypingLoop(ctx);
+      const placeholder = await ctx.reply(PLACEHOLDER_TEXT).catch(() => null);
+      const placeholderId = placeholder?.message_id;
+
+      try {
+        const buffer = await downloadFile(ctx, doc.file_id);
+        const mime = await validateFile(buffer, doc.file_name || '');
+        const extractedText = await parseDocument(buffer, mime);
+
+        if (!extractedText?.trim()) throw new Error('FILE_NO_CONTENT');
+
+        const fileName = doc.file_name || 'document';
+        const userMessage = caption
+          ? `${caption}\n\n[Содержимое файла ${fileName}:]\n${extractedText}`
+          : `[Содержимое файла ${fileName}:]\n${extractedText}`;
+
+        const allowGreeting = await shouldAllowGreeting(ctx.from.id);
+        const history = getRecentHistory(ctx.session);
+        const ask = AGENT_DISPATCH[agentType];
+        const { text: rawAnswer, warning, count, noContext } = await ask(userMessage, history);
+        const answer = stripGreetingPrefix(rawAnswer, allowGreeting);
+
+        const prefix = noContext ? 'ℹ️ Ответ без контекста из базы знаний.\n\n' : '';
+        const suffix = DONT_KNOW_RE.test(answer) ? `\n\n${OWNER_FALLBACK}` : '';
+        await replaceOrReplyLong(ctx, placeholderId, prefix + answer + suffix, CONTROL_KEYBOARD);
+
+        ctx.session.message_history = appendToHistory(history, userMessage, answer);
+
+        auditBestEffort('assistant_response_sent', {
+          actorUserId: ctx.from.id,
+          meta: { flow: 'agent_doc', agentType, filename: fileName },
+        });
+
+        if (warning) await notifyOwner(ctx, count ?? '~80%');
+      } catch (e) {
+        console.error(`[AGENT_DOC] user_id=${ctx.from.id} agent=${agentType} error=${e.message}`);
+        const FILE_ERRORS = {
+          FILE_DOWNLOAD_FAILED: 'Не удалось загрузить файл. Попробуйте ещё раз.',
+          FILE_EMPTY: 'Файл пустой.',
+          FILE_TOO_LARGE: 'Файл слишком большой. Максимум 10 МБ.',
+          FILE_UNSUPPORTED_TYPE: 'Неподдерживаемый тип файла. Допустимы: PDF, DOCX, TXT.',
+          FILE_NO_CONTENT: 'Файл не содержит текста.',
+        };
+        const msg = FILE_ERRORS[e.message] || ERROR_MESSAGES[e.message] || 'Ошибка при обработке файла.';
+        await replaceOrReply(ctx, placeholderId, msg);
+      } finally {
+        clearInterval(typingTimer);
+      }
+    });
+
+    if (!queued.accepted) {
+      auditBestEffort('concurrent_request_blocked', {
+        severity: 'warning',
+        actorUserId: ctx.from.id,
+        meta: { flow: 'agent_doc', agentType, queueSize: queued.queueSize },
       });
       return ctx.reply('Слишком много сообщений подряд. Дождитесь ответа и попробуйте ещё раз.');
     }
