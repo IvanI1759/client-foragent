@@ -9,7 +9,7 @@ if (!GEMINI_API_KEY) {
 
 const COMPLEX_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
 const SIMPLE_MODEL = process.env.GEMINI_SIMPLE_MODEL || 'gemini-2.5-flash-lite';
-const REQUEST_TIMEOUT = 60_000;
+const REQUEST_TIMEOUT = 120_000;
 const SIMPLE_MAX_OUTPUT_TOKENS = 1200;
 const COMPLEX_MAX_OUTPUT_TOKENS = 2200;
 const DETAILED_MAX_OUTPUT_TOKENS = 3200;

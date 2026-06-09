@@ -54,7 +54,7 @@ function accessCta(userId) {
 }
 
 const TYPING_INTERVAL_MS = 4000;
-const PLACEHOLDER_TEXT = '🤔 Думаю…';
+const PLACEHOLDER_TEXT = '🔍 Ищу информацию, подождите...';
 
 function auditBestEffort(eventType, options) {
   recordAuditEvent(eventType, options).catch((error) => {
