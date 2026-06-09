@@ -16,6 +16,7 @@ const HISTORY_MESSAGES = HISTORY_PAIRS * 2;
 const GUEST_RATE_LIMIT = parseInt(process.env.GUEST_RATE_LIMIT, 10) || 0;
 const MAX_PENDING_REQUESTS_PER_USER = 2;
 const requestQueues = new Map();
+const ALWAYS_SEARCH_AGENTS = new Set(['packager']);
 
 const AGENT_DISPATCH = {
   marketer: askMarketer,
@@ -54,7 +55,7 @@ function accessCta(userId) {
 }
 
 const TYPING_INTERVAL_MS = 4000;
-const PLACEHOLDER_TEXT = '🔍 Ищу информацию, подождите...';
+const PLACEHOLDER_TEXT = '🔍 Ищу в интернете...';
 
 function auditBestEffort(eventType, options) {
   recordAuditEvent(eventType, options).catch((error) => {
@@ -294,7 +295,8 @@ export function messageHandler(bot) {
       }
 
       const typingTimer = startTypingLoop(ctx);
-      const placeholder = await ctx.reply(PLACEHOLDER_TEXT).catch(() => null);
+      const placeholderText = ALWAYS_SEARCH_AGENTS.has(agentType) ? PLACEHOLDER_TEXT : null;
+      const placeholder = placeholderText ? await ctx.reply(placeholderText).catch(() => null) : null;
       const placeholderId = placeholder?.message_id;
 
       try {
