@@ -954,7 +954,7 @@ export async function askConsultant(userMessage, messageHistory = []) {
     messageHistory,
     complexity,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
-    useSearch: true,
+    useSearch: noContext,
   });
   return { text, warning, count, noContext };
 }

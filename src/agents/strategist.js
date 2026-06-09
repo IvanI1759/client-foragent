@@ -153,7 +153,7 @@ export async function askStrategist(userMessage, messageHistory = []) {
     messageHistory,
     complexity: 'complex',
     maxOutputTokens: MAX_OUTPUT_TOKENS,
-    useSearch: true,
+    useSearch: noContext,
   });
   return { text, warning, count, noContext };
 }

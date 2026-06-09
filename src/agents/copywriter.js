@@ -489,7 +489,7 @@ export async function askCopywriter(userMessage, messageHistory = []) {
     ragContext: noContext ? null : context,
     messageHistory,
     complexity,
-    useSearch: true,
+    useSearch: noContext,
   });
   return { text, warning, count, noContext };
 }
