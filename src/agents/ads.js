@@ -391,6 +391,7 @@ export async function askAds(userMessage, messageHistory = []) {
     ragContext: noContext ? null : context,
     messageHistory,
     complexity,
+    useSearch: true,
   });
   return { text, warning, count, noContext };
 }

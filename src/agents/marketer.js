@@ -400,6 +400,7 @@ export async function askMarketer(userMessage, messageHistory = []) {
     ragContext: noContext ? null : context,
     messageHistory,
     complexity,
+    useSearch: true,
   });
   return { text, warning, count, noContext };
 }
