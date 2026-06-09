@@ -101,6 +101,7 @@ async function generateContentWithCompletionRetry({
   systemInstruction,
   maxOutputTokens,
   signal,
+  tools,
 }) {
   let response;
 
@@ -113,6 +114,7 @@ async function generateContentWithCompletionRetry({
         temperature: 0.7,
         maxOutputTokens,
         safetySettings: SAFETY_SETTINGS,
+        ...(tools ? { tools } : {}),
       },
     }, { signal }));
 
@@ -129,7 +131,7 @@ async function generateContentWithCompletionRetry({
   return response;
 }
 
-export async function generateResponse({ userMessage, systemPrompt, ragContext, messageHistory = [], complexity = 'complex', maxOutputTokens: maxOutputTokensOverride }) {
+export async function generateResponse({ userMessage, systemPrompt, ragContext, messageHistory = [], complexity = 'complex', maxOutputTokens: maxOutputTokensOverride, useSearch = false }) {
   const gate = await reserveGlobalApiCall();
   if (!gate.allowed) {
     throw new Error('GEMINI_GLOBAL_LIMIT');
@@ -163,6 +165,8 @@ export async function generateResponse({ userMessage, systemPrompt, ragContext, 
     let response;
     let lastError;
 
+    const tools = useSearch ? [{ googleSearch: {} }] : undefined;
+
     for (const candidate of modelCandidates) {
       activeModel = candidate;
       try {
@@ -172,6 +176,7 @@ export async function generateResponse({ userMessage, systemPrompt, ragContext, 
           systemInstruction: fullSystemPrompt,
           maxOutputTokens,
           signal: controller.signal,
+          tools,
         });
         lastError = null;
         break;
