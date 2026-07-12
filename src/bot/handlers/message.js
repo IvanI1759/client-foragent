@@ -7,7 +7,7 @@ import { askStrategist } from '../../agents/strategist.js';
 import { checkAndIncrementUserRateLimit, clearSessionHistory, hasAssistantResponse, recordAuditEvent } from '../../db/queries.js';
 import { CONTROL_KEYBOARD, AGENT_ICONS, AGENT_NAMES, OWNER_USERNAME, getAgentsKeyboard } from './agent.js';
 import { downloadFile } from './admin.js';
-import { validateFile, parseDocument } from '../../rag/ingest.js';
+import { validateFile, parseDocument, MAX_FILE_SIZE_MB } from '../../rag/ingest.js';
 
 const MAX_MESSAGE_LENGTH = 4000;
 const TELEGRAM_MESSAGE_LIMIT = 4000;
@@ -32,9 +32,9 @@ const GREETING_PREFIX_RE = /^\s*(?:👋\s*)?(?:привет(?:ик)?|здрав�
 
 const ERROR_MESSAGES = {
   GEMINI_TIMEOUT: 'Ответ занимает слишком много времени. Попробуйте короче сформулировать вопрос.',
-  GEMINI_RATE_LIMIT: 'Слишком много запросов. Подождите минуту и попробуйте снова.',
+  GEMINI_RATE_LIMIT: 'Gemini временно ограничил запросы. Подождите 1-2 минуты и попробуйте снова.',
   GEMINI_SERVER_ERROR: 'Сервис временно недоступен. Попробуйте через минуту.',
-  GEMINI_GLOBAL_LIMIT: 'Сервис временно недоступен. Попробуйте завтра.',
+  GEMINI_GLOBAL_LIMIT: 'Дневной лимит AI-запросов исчерпан. Попробуйте завтра.',
   GEMINI_EMPTY_RESPONSE: 'Не удалось получить ответ. Переформулируйте вопрос.',
 };
 
@@ -188,7 +188,7 @@ async function handleGuestMessage(ctx, text) {
           actorUserId: ctx.from.id,
           meta: { flow: 'guest', limit: GUEST_RATE_LIMIT },
         });
-        return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
+        return ctx.reply('Лимит гостевых запросов исчерпан. Попробуйте через час или запросите доступ у владельца.');
       }
     }
 
@@ -227,7 +227,7 @@ async function handleGuestMessage(ctx, text) {
       actorUserId: ctx.from.id,
       meta: { flow: 'guest', queueSize: queued.queueSize },
     });
-    return ctx.reply('Слишком много сообщений подряд. Дождитесь ответа и попробуйте ещё раз.');
+    return ctx.reply('Я уже обрабатываю ваши прошлые сообщения. Дождитесь ответа и попробуйте ещё раз.');
   }
   return queued.promise;
 }
@@ -291,7 +291,7 @@ export function messageHandler(bot) {
           actorUserId: ctx.from.id,
           meta: { flow: 'agent', agentType },
         });
-        return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
+        return ctx.reply('Лимит запросов на этот час исчерпан. Попробуйте позже.');
       }
 
       const typingTimer = startTypingLoop(ctx);
@@ -334,7 +334,7 @@ export function messageHandler(bot) {
         actorUserId: ctx.from.id,
         meta: { flow: 'agent', agentType, queueSize: queued.queueSize },
       });
-      return ctx.reply('Слишком много сообщений подряд. Дождитесь ответа и попробуйте ещё раз.');
+      return ctx.reply('Я уже обрабатываю ваши прошлые сообщения. Дождитесь ответа и попробуйте ещё раз.');
     }
     return queued.promise;
   });
@@ -367,7 +367,7 @@ export function messageHandler(bot) {
           actorUserId: ctx.from.id,
           meta: { flow: 'agent_doc', agentType },
         });
-        return ctx.reply('Лимит запросов исчерпан. Попробуйте через час.');
+        return ctx.reply('Лимит запросов на этот час исчерпан. Попробуйте позже.');
       }
 
       const doc = ctx.message.document;
@@ -412,7 +412,7 @@ export function messageHandler(bot) {
         const FILE_ERRORS = {
           FILE_DOWNLOAD_FAILED: 'Не удалось загрузить файл. Попробуйте ещё раз.',
           FILE_EMPTY: 'Файл пустой.',
-          FILE_TOO_LARGE: 'Файл слишком большой. Максимум 10 МБ.',
+          FILE_TOO_LARGE: `Файл слишком большой. Максимум ${MAX_FILE_SIZE_MB} МБ.`,
           FILE_UNSUPPORTED_TYPE: 'Неподдерживаемый тип файла. Допустимы: PDF, DOCX, TXT.',
           FILE_NO_CONTENT: 'Файл не содержит текста.',
         };
@@ -429,7 +429,7 @@ export function messageHandler(bot) {
         actorUserId: ctx.from.id,
         meta: { flow: 'agent_doc', agentType, queueSize: queued.queueSize },
       });
-      return ctx.reply('Слишком много сообщений подряд. Дождитесь ответа и попробуйте ещё раз.');
+      return ctx.reply('Я уже обрабатываю ваши прошлые сообщения. Дождитесь ответа и попробуйте ещё раз.');
     }
     return queued.promise;
   });
