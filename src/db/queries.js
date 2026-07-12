@@ -175,6 +175,44 @@ export async function listDocuments() {
   });
 }
 
+export async function listTmpDocuments() {
+  const { data, error } = await supabase
+    .from('documents')
+    .select('filename, agent_type, created_at')
+    .ilike('filename', '%__tmp_%')
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+
+  const grouped = new Map();
+  for (const row of data || []) {
+    const key = `${row.filename}::${row.agent_type}`;
+    const current = grouped.get(key) || {
+      filename: row.filename,
+      agent_type: row.agent_type,
+      chunks: 0,
+      first_created_at: row.created_at,
+    };
+    current.chunks += 1;
+    if (row.created_at && (!current.first_created_at || row.created_at < current.first_created_at)) {
+      current.first_created_at = row.created_at;
+    }
+    grouped.set(key, current);
+  }
+  return Array.from(grouped.values());
+}
+
+export async function deleteStaleTmpDocuments(maxAgeHours = 1) {
+  const cutoff = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from('documents')
+    .delete()
+    .ilike('filename', '%__tmp_%')
+    .lt('created_at', cutoff)
+    .select('filename, agent_type');
+  if (error) throw error;
+  return data || [];
+}
+
 export async function getDocumentStats() {
   const { data, error } = await supabase.from('documents').select('agent_type');
   if (error) throw error;
@@ -265,6 +303,26 @@ export async function deletePendingUpload(userId) {
   if (error) throw error;
 }
 
+export async function listPendingUploads() {
+  const { data, error } = await supabase
+    .from('pending_uploads')
+    .select('admin_user_id, filename, created_at')
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function deleteExpiredPendingUploads(maxAgeHours = 24) {
+  const cutoff = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from('pending_uploads')
+    .delete()
+    .lt('created_at', cutoff)
+    .select('admin_user_id, filename, created_at');
+  if (error) throw error;
+  return data || [];
+}
+
 // ---------- audit_logs ----------
 
 export async function recordAuditEvent(eventType, {
@@ -294,6 +352,22 @@ export async function hasAssistantResponse(userId) {
     .limit(1);
   if (error) throw error;
   return Array.isArray(data) && data.length > 0;
+}
+
+export async function listRecentAuditEvents(eventTypes = [], limit = 20) {
+  let query = supabase
+    .from('audit_logs')
+    .select('event_type, severity, meta, created_at')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (Array.isArray(eventTypes) && eventTypes.length > 0) {
+    query = query.in('event_type', eventTypes);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
 }
 
 // ---------- stats ----------

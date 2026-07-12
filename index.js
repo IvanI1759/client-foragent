@@ -39,10 +39,12 @@ bot.catch((err, ctx) => {
 
 const KEEPALIVE_MS = 6 * 60 * 60 * 1000;
 
-async function pingSupabase(label) {
+async function pingSupabase(label, { logSuccess = false } = {}) {
   try {
     await checkSupabaseConnection();
-    console.log(`[KEEPALIVE] Supabase OK (${label})`);
+    if (logSuccess) {
+      console.log(`[KEEPALIVE] Supabase OK (${label})`);
+    }
   } catch (e) {
     console.error(`[KEEPALIVE] Supabase failed (${label}): ${formatError(e)}`);
   }
@@ -88,6 +90,8 @@ const OWNER_ONLY_COMMANDS = [
   { command: 'users', description: 'Список партнёров' },
   { command: 'stats', description: 'Статистика использования' },
   { command: 'upload', description: 'Загрузить документ в базу знаний' },
+  { command: 'upload_status', description: 'Диагностика загрузок и базы знаний' },
+  { command: 'cleanup_uploads', description: 'Очистить зависшие загрузки' },
   { command: 'list_docs', description: 'Список документов в базе знаний' },
   { command: 'delete_doc', description: 'Удалить документ из базы знаний' },
 ];
@@ -125,7 +129,7 @@ const server = app.listen(Number(PORT), async () => {
     setTimeout(() => pingSupabase('boot-retry'), 15_000);
   }
 
-  setInterval(() => pingSupabase('interval'), KEEPALIVE_MS);
+  setInterval(() => pingSupabase('interval', { logSuccess: true }), KEEPALIVE_MS);
 
   try {
     await registerCommandScopes();

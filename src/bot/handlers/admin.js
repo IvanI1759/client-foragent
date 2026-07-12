@@ -12,11 +12,16 @@ import {
   savePendingUpload,
   getPendingUpload,
   deletePendingUpload,
+  listPendingUploads,
+  deleteExpiredPendingUploads,
+  listTmpDocuments,
+  deleteStaleTmpDocuments,
+  listRecentAuditEvents,
   recordAuditEvent,
 } from '../../db/queries.js';
 import { invalidateCache } from '../middleware/auth.js';
 import { isAdmin } from '../admins.js';
-import { ingestFile, sanitizeFilename } from '../../rag/ingest.js';
+import { ingestFile, sanitizeFilename, MAX_FILE_SIZE, MAX_FILE_SIZE_MB } from '../../rag/ingest.js';
 import { embedChunks } from '../../rag/embed.js';
 
 const VALID_AGENTS = ['marketer', 'copywriter', 'ads', 'packager'];
@@ -27,6 +32,19 @@ const AGENT_NAMES = {
   ads: 'Директолог (РСЯ)',
   packager: 'Упаковщик',
   consultant: 'Консультант',
+  all: 'Общая база',
+};
+
+const UPLOAD_ERROR_MESSAGES = {
+  FILE_EMPTY: 'Файл пустой.',
+  FILE_TOO_LARGE: `Файл больше ${MAX_FILE_SIZE_MB} МБ. Сожмите PDF, пришлите DOCX/TXT или разделите файл на части.`,
+  FILE_UNSUPPORTED_TYPE: 'Неподдерживаемый тип файла (допустимы PDF, DOCX, TXT).',
+  FILE_NO_CONTENT: 'Не удалось извлечь текст из файла.',
+  FILE_DOWNLOAD_FAILED: 'Не удалось скачать файл.',
+  GEMINI_GLOBAL_LIMIT: 'Дневной лимит API исчерпан. Попробуйте позже.',
+  GEMINI_TIMEOUT: 'Превышено время ожидания API.',
+  GEMINI_RATE_LIMIT: 'Слишком много запросов, подождите минуту.',
+  GEMINI_SERVER_ERROR: 'Сервис временно недоступен.',
 };
 
 function logDetailedError(scope, error, extra = {}) {
@@ -56,6 +74,17 @@ function formatErrorDetails(error) {
   ].filter(Boolean);
 
   return parts.length > 0 ? parts.join('\n') : 'details=none';
+}
+
+function formatDate(value) {
+  return value ? new Date(value).toISOString().replace('T', ' ').slice(0, 16) : '-';
+}
+
+function formatUploadEvent(event) {
+  const meta = event.meta || {};
+  const file = meta.filename ? ` ${meta.filename}` : '';
+  const message = meta.message ? ` (${meta.message})` : '';
+  return `• ${formatDate(event.created_at)} ${event.event_type}${file}${message}`;
 }
 
 function auditBestEffort(eventType, options) {
@@ -195,10 +224,83 @@ export function adminHandler(bot) {
   bot.command('stats', statsHandler);
   bot.command('status', statsHandler);
 
+  // /upload_status - диагностика загрузок и базы знаний
+  bot.command('upload_status', async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    try {
+      const [stats, pending, tmpDocs, recentEvents] = await Promise.all([
+        getStats(),
+        listPendingUploads(),
+        listTmpDocuments(),
+        listRecentAuditEvents([
+          'upload_pending_created',
+          'upload_completed',
+          'upload_failed',
+          'upload_rejected_too_large',
+          'upload_cancelled',
+        ], 10),
+      ]);
+
+      const byAgent = Object.entries(stats.documents.byAgent)
+        .map(([agent, count]) => `• ${AGENT_NAMES[agent] || agent}: ${count}`)
+        .join('\n') || '• нет документов';
+
+      const pendingLines = pending.length
+        ? pending.map((p) => `• ${p.filename} (${formatDate(p.created_at)})`).join('\n')
+        : '• нет';
+
+      const tmpLines = tmpDocs.length
+        ? tmpDocs.map((d) => `• ${d.filename} - ${AGENT_NAMES[d.agent_type] || d.agent_type} (${d.chunks})`).join('\n')
+        : '• нет';
+
+      const eventLines = recentEvents.length
+        ? recentEvents.map(formatUploadEvent).join('\n')
+        : '• нет событий';
+
+      await ctx.reply(
+        `Диагностика загрузок:\n\n` +
+          `Чанки по агентам:\n${byAgent}\n\n` +
+          `Ожидают выбора агента:\n${pendingLines}\n\n` +
+          `Временные документы:\n${tmpLines}\n\n` +
+          `Последние события:\n${eventLines}`
+      );
+    } catch (e) {
+      console.error(`[UPLOAD_STATUS] user_id=${ctx.from.id} error=${e.message}`);
+      await ctx.reply('Ошибка при получении диагностики загрузок');
+    }
+  });
+
+  // /cleanup_uploads - убрать зависшие временные записи
+  bot.command('cleanup_uploads', async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    try {
+      const [pendingDeleted, tmpDeleted] = await Promise.all([
+        deleteExpiredPendingUploads(24),
+        deleteStaleTmpDocuments(1),
+      ]);
+      auditBestEffort('upload_cleanup_completed', {
+        severity: 'warning',
+        actorUserId: ctx.from.id,
+        meta: {
+          pendingDeleted: pendingDeleted.length,
+          tmpDeleted: tmpDeleted.length,
+        },
+      });
+      await ctx.reply(
+        `Очистка завершена:\n` +
+          `• зависшие ожидания старше 24 часов: ${pendingDeleted.length}\n` +
+          `• временные чанки старше 1 часа: ${tmpDeleted.length}`
+      );
+    } catch (e) {
+      console.error(`[CLEANUP_UPLOADS] user_id=${ctx.from.id} error=${e.message}`);
+      await ctx.reply('Ошибка при очистке загрузок');
+    }
+  });
+
   // /upload - подсказка; владелец отправляет файл документом
   bot.command('upload', async (ctx) => {
     if (!isAdmin(ctx)) return;
-    await ctx.reply('Отправьте файл (PDF, DOCX или TXT, до 10 МБ) как документ.');
+    await ctx.reply(`Отправьте файл (PDF, DOCX или TXT, до ${MAX_FILE_SIZE_MB} МБ) как документ.`);
   });
 
   // Приём документа (только владелец)
@@ -210,13 +312,13 @@ export function adminHandler(bot) {
       `[UPLOAD] document_received user_id=${ctx.from.id} file_name=${doc.file_name} file_size=${doc.file_size || 0}`
     );
 
-    if (doc.file_size && doc.file_size > 10 * 1024 * 1024) {
+    if (doc.file_size && doc.file_size > MAX_FILE_SIZE) {
       auditBestEffort('upload_rejected_too_large', {
         severity: 'warning',
         actorUserId: ctx.from.id,
         meta: { filename: doc.file_name, fileSize: doc.file_size },
       });
-      return ctx.reply('Файл слишком большой (максимум 10 МБ).');
+      return ctx.reply(UPLOAD_ERROR_MESSAGES.FILE_TOO_LARGE);
     }
 
     await savePendingUpload(
@@ -362,18 +464,7 @@ export function adminHandler(bot) {
           code: e?.code || null,
         },
       });
-      const messages = {
-        FILE_EMPTY: 'Файл пустой.',
-        FILE_TOO_LARGE: 'Файл больше 10 МБ.',
-        FILE_UNSUPPORTED_TYPE: 'Неподдерживаемый тип файла (допустимы PDF, DOCX, TXT).',
-        FILE_NO_CONTENT: 'Не удалось извлечь текст из файла.',
-        FILE_DOWNLOAD_FAILED: 'Не удалось скачать файл.',
-        GEMINI_GLOBAL_LIMIT: 'Дневной лимит API исчерпан. Попробуйте позже.',
-        GEMINI_TIMEOUT: 'Превышено время ожидания API.',
-        GEMINI_RATE_LIMIT: 'Слишком много запросов, подождите минуту.',
-        GEMINI_SERVER_ERROR: 'Сервис временно недоступен.',
-      };
-      const humanMessage = messages[e.message] || 'Ошибка при загрузке документа.';
+      const humanMessage = UPLOAD_ERROR_MESSAGES[e.message] || 'Ошибка при загрузке документа.';
       const debugMessage =
         `${humanMessage}\n\n` +
         `Технические детали:\n` +
